@@ -12,8 +12,13 @@ from skimage.exposure import rescale_intensity
 from . import unet
 from . import watershed as ws
 
+# ----------------------------------------------------------------------------
+# The following was copied from https://github.com/jni/platelet-unet-watershed
+# ----------------------------------------------------------------------------
+
+
 u_state_fn = os.path.join(
-        os.path.dirname(__file__), 'data/unet-210913-zyxmc.pt'
+        os.path.dirname(__file__), 'data/211309_151717_unet_z-1_y-1_x-1_m_c.pt'
         )
 
 u = unet.UNet(in_channels=1, out_channels=5)
