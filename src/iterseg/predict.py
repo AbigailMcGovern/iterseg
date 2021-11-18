@@ -15,19 +15,20 @@ from . import watershed as ws
 # ----------------------------------------------------------------------------
 # The following was copied from https://github.com/jni/platelet-unet-watershed
 # ----------------------------------------------------------------------------
-
-
-u_state_fn = os.path.join(
-        os.path.dirname(__file__), 'data/211309_151717_unet_z-1_y-1_x-1_m_c.pt'
-        )
-
-u = unet.UNet(in_channels=1, out_channels=5)
 IGNORE_CUDA = False
-map_location = torch.device('cpu')  # for loading the pre-existing unet
-if torch.cuda.is_available() and not IGNORE_CUDA:
-    u.cuda()
-    map_location = None
-u.load_state_dict(torch.load(u_state_fn, map_location=map_location))
+
+DEFAULT_UNET_PATH = os.path.join(
+            os.path.dirname(__file__), 'data/211309_151717_unet_z-1_y-1_x-1_m_c.pt'
+            )
+
+def load_unet(u_state_fn=DEFAULT_UNET_PATH):
+    u = unet.UNet(in_channels=1, out_channels=5)
+    map_location = torch.device('cpu')  # for loading the pre-existing unet
+    if torch.cuda.is_available() and not IGNORE_CUDA:
+        u.cuda()
+        map_location = None
+    u.load_state_dict(torch.load(u_state_fn, map_location=map_location))
+    return u
 
 
 def make_chunks(arr_shape, chunk_shape, margin):
@@ -83,13 +84,17 @@ def throttle_function(func, every_n=1000):
 
 
 def predict_output_chunks(
-        unet,
+        unet, # now a string: 'path/to/unet' - only used if use_default_unet == False
         input_volume,
         chunk_size,
         output_volume,
         margin=0,
+        use_default_unet=True
         ):
-    u = unet
+    if use_default_unet:
+        u = load_unet()
+    else:
+        u = load_unet(unet)
     ndim = len(chunk_size)
     chunk_starts, chunk_crops = make_chunks(
             input_volume.shape[-ndim:], chunk_size, margin=margin
@@ -111,6 +116,7 @@ def predict_output_chunks(
 
 
 if __name__ == '__main__':
+    u = load_unet()
     import nd2_dask as nd2
     #data_fn = '/data/platelets/200519_IVMTR69_Inj4_dmso_exp3.nd2'
     data_fn = os.path.expanduser(
