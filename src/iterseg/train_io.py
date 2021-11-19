@@ -1,30 +1,26 @@
-from numpy.core.numeric import full
-from augment import augment_images
+from .augment import augment_images
 import dask.array as da
 from datetime import datetime
-from helpers import get_files, log_dir_or_None, write_log, LINE
-from labels import get_training_labels, print_labels_info
+from .helpers import get_files, log_dir_or_None, write_log, LINE
+from .labels import get_training_labels, print_labels_info
 import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
 import re
-import skimage.filters as filters
-from skimage.measure import regionprops
-from skimage.morphology._util import _offsets_to_raveled_neighbors
 from tifffile import TiffWriter, imread
-from time import time
 import torch 
 from tqdm import tqdm
 import zarr
 import dask.array as da
+from napari.types import ImageData, LabelsData
 
 # -------------------
 # Generate Train Data
 # -------------------
 def get_train_data(
-    image_paths, 
-    gt_paths,
+    image_list, 
+    gt_list,
     out_dir, 
     name='train-unet',
     shape=(10, 256, 256), 
@@ -81,22 +77,24 @@ def get_train_data(
     if there is only one set of training labels generated, the name
     of the labels (anywhere you see 'name' above) will be 'y'.
     """
-    assert len(image_paths) == len(gt_paths)
+    assert len(image_paths) == len(gt_list)
     now = datetime.now()
     d = now.strftime("%y%m%d_%H%M%S") + '_' + name
     out_dir = os.path.join(out_dir, d)
     os.makedirs(out_dir, exist_ok=True)
     chunk_dicts = []
+    if not isinstance(scale, list):
+        scale = [scale, ] * len(image_list)
     for i in range(len(image_paths)):
         chunk_dict = get_random_chunks(
-            image_paths[i], 
-            gt_paths[i], 
+            image_list[i], 
+            gt_list[i], 
             out_dir, 
             name=name,
             shape=shape, 
             n=n_each, 
             channels=channels,
-            scale=scale, 
+            scale=scale[i], 
             log=log, 
             image_no=i
         )
@@ -108,8 +106,8 @@ def get_train_data(
 
 
 def get_random_chunks(
-                      image_path, 
-                      gt_path, 
+                      image_src, 
+                      gt_src, 
                       out_dir, 
                       name='unet-training',
                       shape=(10, 256, 256), 
@@ -143,12 +141,40 @@ def get_random_chunks(
     chunk_dict:
  
     '''
-    image = zarr.open_array(image_path)
+    now = datetime.now()
+    d = now.strftime("%y%m%d_%H%M%S") + '_' + name
+    if isinstance(image_src, str):
+        image = zarr.open_array(image_src)
+        im_name = image_src
+    elif isinstance(image_src, ImageData):
+        image = image_src.data
+        im_name = image_src.name
+    else:
+        try:
+            im_shape = image_src.shape
+        except:
+            m = f'input image should be a path (str), napari image layer, or array like not {type(image_src)}'
+            raise TypeError(m)
+        image = image_src
+        im_name = f'image_shape-{im_shape}_prepared-{d}'
     image = normalise_data(np.array(image))
-    ground_truth = zarr.open_array(gt_path)
+    if isinstance(gt_src, str):
+        ground_truth = zarr.open_array(gt_src)
+        gt_name = gt_src
+    elif isinstance(gt_src, LabelsData):
+        ground_truth = gt_src.data
+        gt_name = gt_src.name
+    else:
+        try:
+            gt_shape = gt_src.shape
+        except:
+            m = f'input image should be a path (str), napari image layer, or array like not {type(gt_src)}'
+            raise TypeError(m)
+        gt_name = f'labels_shape-{gt_shape}_prepared-{d}'
+        ground_truth = gt_src
     ground_truth = np.array(ground_truth)
     print(LINE)
-    s = f'Generating training data from image: {image_path}, Ground truth: {gt_path}'
+    s = f'Generating training data from image: {im_name}, Ground truth: {gt_name}'
     print(s)
     # in the following code, image chunks are np.ndarray
     print('Generating random image chunks...')
@@ -160,7 +186,7 @@ def get_random_chunks(
         image_no=image_no
     )
     chunk_dict['df']['image_no'] = [image_no, ] * len(chunk_dict['df'])
-    chunk_dict['df']['image_file'] = [Path(image_path).stem, ] * len(chunk_dict['df'])
+    chunk_dict['df']['image_file'] = [Path(im_name).stem, ] * len(chunk_dict['df'])
     print('Generating training labels...')
     chunk_dict = get_labels_chunks(chunk_dict, ground_truth, 
                                    channels=channels, scale=scale)
@@ -592,12 +618,12 @@ if __name__ =="__main__":
     labels_paths = [os.path.join(data_dir, '191113_IVMTR26_I3_E3_t58_cang_training_labels.zarr')]
     labs = zarr.open(labels_paths[0])
     labs = np.array(labs)
-    cent_off = get_centre_offsets(labs, (4, 1, 1))
-    v = napari.Viewer()
-    z = cent_off[0] # - cent_off[0].min()
-    v.add_image(z, name='Z offsets', colormap='bop purple', blending='additive', scale=(4, 1, 1))
-    y = cent_off[1] #- cent_off[1].min()
-    v.add_image(y, name='Y offsets', colormap='bop orange', blending='additive', scale=(4, 1, 1))
-    x = cent_off[2] #- cent_off[2].min()
-    v.add_image(x, name='X offsets', colormap='bop blue', blending='additive', scale=(4, 1, 1))
-    napari.run()
+    #cent_off = get_centre_offsets(labs, (4, 1, 1))
+    #v = napari.Viewer()
+    #z = cent_off[0] # - cent_off[0].min()
+    #v.add_image(z, name='Z offsets', colormap='bop purple', blending='additive', scale=(4, 1, 1))
+    #y = cent_off[1] #- cent_off[1].min()
+    #v.add_image(y, name='Y offsets', colormap='bop orange', blending='additive', scale=(4, 1, 1))
+    #x = cent_off[2] #- cent_off[2].min()
+    #v.add_image(x, name='X offsets', colormap='bop blue', blending='additive', scale=(4, 1, 1))
+    #napari.run()

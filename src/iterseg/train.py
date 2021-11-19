@@ -1,20 +1,20 @@
-from custom_loss import WeightedBCELoss, DiceLoss, EpochwiseWeightedBCELoss, \
+from .custom_loss import WeightedBCELoss, DiceLoss, EpochwiseWeightedBCELoss, \
     channel_losses_to_dict, ChannelwiseLoss
 from datetime import datetime
 import dask.array as da
-from helpers import LINE, write_log
+from .helpers import LINE, write_log
 import napari
 import numpy as np
 import os
 import pandas as pd
-from plots import save_loss_plot, save_channel_loss_plot
+from .plots import save_loss_plot, save_channel_loss_plot
 from tifffile import TiffWriter 
 import torch 
 import torch.nn as nn
 import torch.optim as optim
-from train_io import get_train_data, load_train_data, load_dask_as_tensor, load_tensor_from_numpy
+from .train_io import get_train_data, load_train_data, load_dask_as_tensor, load_tensor_from_numpy
 from tqdm import tqdm
-from unet import UNet, ForkedUNet
+from .unet import UNet, ForkedUNet
 
 
 # DICE seems to be more common but BCE Loss is also used for 
@@ -513,8 +513,8 @@ def train_unet_from_directory(
         validate = False
     unet = train_unet(
                       # training data
-                      xs, 
-                      ys, 
+                      x, 
+                      y, 
                       ids, 
                       # output information
                       out_dir, 

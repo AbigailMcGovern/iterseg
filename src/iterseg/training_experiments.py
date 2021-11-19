@@ -8,14 +8,14 @@ from pathlib import Path
 
 def run_experiment(
     experiment_dict, 
-    image_paths, 
-    labels_paths, 
+    image_list, 
+    labels_list, 
     out_dir, 
     *args, 
     **kwargs
     ):
     gtd_kwargs = experiment_dict['get_train_data']
-    train_dict = get_train_data(image_paths, labels_paths, out_dir, **gtd_kwargs)
+    train_dict = get_train_data(image_list, labels_list, out_dir, **gtd_kwargs)
     unets = {}
     for key in train_dict.keys():
         train_kwargs = train_dict[key]
