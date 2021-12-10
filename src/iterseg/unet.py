@@ -128,7 +128,7 @@ class UNet(nn.Module):
     def __init__(
                  self, 
                  in_channels=1, 
-                 out_channels=3, 
+                 out_channels=5, 
                  down_factors=(1, 2, 2), 
                  up='convolution', 
                  downsample_1_at_bottom=True, 

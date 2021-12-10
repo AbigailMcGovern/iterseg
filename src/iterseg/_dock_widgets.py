@@ -8,9 +8,197 @@ from napari_plugin_engine import napari_hook_implementation
 from magicgui import widgets, magic_factory
 import toolz as tz
 
-from .predict import throttle_function, load_default_unet, predict_output_chunks
+from .predict import predict_output_chunks
 from . import watershed as ws
+from .training_experiments import get_experiment_dict, run_experiment
+import zarr
+from skimage.io import imread
+import os
 
+
+# ------------
+# Train widget
+# ------------
+
+
+@magic_factory(
+    call_button=True, 
+    mask_prediction={'choices': ['mask', 'centreness']}, 
+    centre_prediciton={'choices': ['centreness-log', 'centreness', 'centroid-gauss']},
+    affinities_extent={'widget_type' : 'LiteralEvalLineEdit'},
+    training_name={'widget_type': 'LineEdit'}, 
+    loss_function={'choices': ['BCELoss', 'DiceLoss']}, 
+    output_dir={'widget_type': 'FileEdit'}, 
+    scale={'widget_type' : 'LiteralEvalLineEdit'},
+    )
+def train_from_viewer(
+    viewer: napari.viewer.Viewer, 
+    image_4D_stack: napari.types.ImageData, 
+    labels_4D_stack: napari.types.LabelsData,
+    scale, 
+    mask_prediction='mask', 
+    centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P
+    affinities_extent=1, 
+    training_name='my-unet',
+    loss_function='BCELoss', 
+    learning_rate=0.01, 
+    epochs=4,
+    validation_prop=0.2, 
+    n_each=50,
+    output_dir='.'
+    ):
+    assert image_4D_stack.shape == labels_4D_stack.shape
+    channels_list = construct_channels_list(affinities_extent, mask_prediction, 
+                                        centre_prediciton)
+    condition_name = [training_name, ]
+    image_list = [image_4D_stack[i, ...] for i in range(image_4D_stack.shape[0])]
+    labels_list = [labels_4D_stack[i, ...] for i in range(labels_4D_stack.shape[0])]
+    conditions_list = construct_conditions_list(image_list, loss_function, learning_rate, epochs, scale)
+    exp_dict = get_experiment_dict(channels_list, condition_name, 
+                                   conditions_list=conditions_list, 
+                                   validation_prop=validation_prop, 
+                                   n_each=n_each)
+    run_experiment(exp_dict, image_list, labels_list, output_dir)
+
+
+def construct_channels_list(
+    affinities_extent, 
+    mask_prediction, 
+    centre_predicition
+    ):
+    dims = ('z', 'y', 'x')
+    affs = []
+    if isinstance(affinities_extent, tuple):
+        m = f'please ensure the length of the affinities extent tuple matches the number of dims in {dims}'
+        assert len(affinities_extent) == len(dims), m
+    elif isinstance(affinities_extent, int):
+        affinities_extent = [affinities_extent, ] * len(dims)
+        affinities_extent = tuple(affinities_extent)
+    else:
+        m = 'Please insert affinities extent of type tuple or int (e.g., 1 or (2, 2, 1))'
+        raise TypeError(m)
+    for i, d in enumerate(dims):
+        n_affs = affinities_extent[i]
+        for n in range(1, n_affs + 1):
+            affs.append(f'{d}-{n}')
+    affs.append(mask_prediction)
+    affs.append(centre_predicition)
+    affs = [tuple(affs), ]
+    return affs
+
+
+def construct_conditions_list(
+    image_list, 
+    loss_function, 
+    learning_rate, 
+    epochs, 
+    scale
+    ):
+    scale = [scale for l in image_list]
+    condition_dict = {
+        'scale' : scale, 
+        'lr' : learning_rate, 
+        'loss_function' : loss_function, 
+        'epochs' : epochs
+    }
+    return [condition_dict, ]
+
+
+# ---------------
+# Load train data
+# ---------------
+
+@magic_factory(
+    images_path={'widget_type': 'FileEdit'}, 
+    labels_path={'widget_type': 'FileEdit'}, 
+    scale={'widget_type' : 'LiteralEvalLineEdit'}, 
+    type={'widget_type' : 'LineEdit'}
+)
+def load_train_data(
+    napari_viewer: napari.viewer.Viewer, 
+    images_path: str, 
+    labels_path: str,
+    scale: tuple,
+    type: str = 'Training'
+    ):
+    if not os.path.isdir(images_path):
+        images_paths = [images_path, ]
+    else:
+        images_paths = [os.path.join(images_path, f) for f in os.listdir(images_path)]
+    if not os.path.isdir(labels_path):
+        labels_paths = [labels_path, ]
+    else:
+        labels_paths = [os.path.join(labels_path, f) for f in os.listdir(labels_path)]
+    # check that there are the same number of files in each path
+    assert len(images_paths) == len(labels_paths)
+    # go though every image and read in
+    img0 = read_with_correct_modality(images_paths[0]) # probs need to use tensorstore
+    im_shape = img0.shape
+    del img0
+    lab0 = read_with_correct_modality(labels_paths[0])
+    lb_shape = lab0.shape
+    del lab0
+    assert im_shape == lb_shape
+    assert len(im_shape) == 3
+    image_stack = generate_4D_stack(images_paths, im_shape)
+    labels_stack = generate_4D_stack(labels_paths, lb_shape)
+    napari_viewer.add_image(image_stack, scale=scale, name=f'{type} Images')
+    napari_viewer.layers['Training Images'].metadata.update({'images_paths' : images_paths, 'labels_paths' : labels_paths})
+    napari_viewer.add_labels(labels_stack, scale=scale, name=f'{type} Ground Truth')
+    napari_viewer.layers['Training Ground Truth'].metadata.update({'images_paths' : images_paths, 'labels_paths' : labels_paths})
+
+
+def generate_4D_stack(path_list, shape):
+    images = []
+    for p in path_list:
+        im  = read_with_correct_modality(p)
+        assert shape == im.shape
+        images.append(im)
+    images = np.stack(images)
+    assert len(images.shape) == 4
+    return images
+
+
+def read_with_correct_modality(path):
+    if path.endswith('.tif') or path.endswith('.tiff'):
+        im = imread(path)
+    elif path.endswith('.zar') or path.endswith('.zarr'):
+        im = zarr.open(path)
+    return im
+
+
+
+# -------------
+# Load New Data
+# -------------
+
+@magic_factory(
+    image_path={'widget_type': 'FileEdit'},
+    labels_dir={'widget_type': 'FileEdit'},
+)
+def initiate_training_data(image_path, labels_dir):
+    # load a single image into 4D array and initiate a labels layer (in file as tesnorstore)
+    pass 
+
+
+@magic_factory(
+    images_path={'widget_type': 'FileEdit'}, 
+    max_number={'widget_type' : 'LiteralEvalLineEdit'}
+)
+def add_image_data(images_path, max_number=None):
+    pass
+
+
+
+# -------------------
+# Segement with Model
+# -------------------
+
+
+
+# -------------------
+# Predict dock widget
+# -------------------
 
 @tz.curry
 def self_destructing_callback(callback, disconnect):
@@ -198,7 +386,7 @@ class UNetPredictWidget(widgets.Container):
                         napari_viewer={'visible': False},
                         chunk_size={'widget_type': 'LiteralEvalLineEdit'},
                         state={'visible': False},
-                        unet={'widget_type': 'LineEdit', 'value': 'optional/path/to/unet.pt'}, 
+                        unet={'widget_type': 'FileEdit'}, 
                         use_default_unet={'widget_type': 'CheckBox'} 
                         )
                 )
@@ -226,7 +414,33 @@ class UNetPredictWidget(widgets.Container):
         self.call_watershed.enabled = True
 
 
+
+# -------------------
+# Validation Analysis
+# -------------------
+
+@magic_factory()
+def validation_analysis(
+    images: napari.types.ImageData,
+    model_1: napari.types.LabelsData,
+    model_2: napari.types.LabelsData,
+    model_3: napari.types.LabelsData,
+    model_4: napari.types.labelsData, 
+    ):
+    # want to compute quality metrics etc for every chunk of data
+    # passed through the pipeline 
+    # therefore need the unet chunks info
+    # probs get input chunk info from unet state dict
+    pass
+
+
+
+# -------------------
+# Hook implementation
+# -------------------
+
+
 @napari_hook_implementation
 def napari_experimental_provide_dock_widget():
     # you can return either a single widget, or a sequence of widgets
-    return [UNetPredictWidget, copy_data]
+    return [UNetPredictWidget, copy_data, train_from_viewer, load_train_data]

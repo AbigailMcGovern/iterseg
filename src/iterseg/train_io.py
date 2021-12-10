@@ -15,13 +15,14 @@ import zarr
 import dask.array as da
 from napari.types import ImageData, LabelsData
 
+
 # -------------------
 # Generate Train Data
 # -------------------
 def get_train_data(
     image_list, 
     gt_list,
-    out_dir, 
+    out_dir=None, 
     name='train-unet',
     shape=(10, 256, 256), 
     n_each=100, 
@@ -77,7 +78,7 @@ def get_train_data(
     if there is only one set of training labels generated, the name
     of the labels (anywhere you see 'name' above) will be 'y'.
     """
-    assert len(image_paths) == len(gt_list)
+    assert len(image_list) == len(gt_list)
     now = datetime.now()
     d = now.strftime("%y%m%d_%H%M%S") + '_' + name
     out_dir = os.path.join(out_dir, d)
@@ -85,7 +86,7 @@ def get_train_data(
     chunk_dicts = []
     if not isinstance(scale, list):
         scale = [scale, ] * len(image_list)
-    for i in range(len(image_paths)):
+    for i in range(len(image_list)):
         chunk_dict = get_random_chunks(
             image_list[i], 
             gt_list[i], 
@@ -141,14 +142,12 @@ def get_random_chunks(
     chunk_dict:
  
     '''
+    save_output = out_dir is not None
     now = datetime.now()
     d = now.strftime("%y%m%d_%H%M%S") + '_' + name
     if isinstance(image_src, str):
         image = zarr.open_array(image_src)
         im_name = image_src
-    elif isinstance(image_src, ImageData):
-        image = image_src.data
-        im_name = image_src.name
     else:
         try:
             im_shape = image_src.shape
@@ -161,9 +160,6 @@ def get_random_chunks(
     if isinstance(gt_src, str):
         ground_truth = zarr.open_array(gt_src)
         gt_name = gt_src
-    elif isinstance(gt_src, LabelsData):
-        ground_truth = gt_src.data
-        gt_name = gt_src.name
     else:
         try:
             gt_shape = gt_src.shape
@@ -193,20 +189,22 @@ def get_random_chunks(
     print('Augmenting data...')
     chunk_dict = augment_chunks(chunk_dict)
     # save the chunks whilst np.ndarray
-    print('Saving for posterity...')
-    save_dir = save_from_chunk_dict(chunk_dict, out_dir, name)
+    save_dir = None
+    if save_output:
+        print('Saving for posterity...')
+        save_dir = save_from_chunk_dict(chunk_dict, out_dir, name)
     # convert to tensor 
     #print('Converting to Torch Tensor...')
     #convert_chunks_to_tensor(chunk_dict)
-    if log:
+        if log:
             write_log(LINE, save_dir)
             write_log(s, save_dir)
-    print(LINE)
-    s = f'Obtained {n} {shape} chunks of training data'
-    print(s)
-    if log:
-        write_log(LINE, save_dir)
-        write_log(s, save_dir)
+        print(LINE)
+        s = f'Obtained {n} {shape} chunks of training data'
+        print(s)
+        if log:
+            write_log(LINE, save_dir)
+            write_log(s, save_dir)
     log_dir = log_dir_or_None(log, save_dir)
     print_labels_info(channels, out_dir=log_dir)
     df_path = os.path.join(save_dir, 'start_coords.csv')

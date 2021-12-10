@@ -1,4 +1,4 @@
-from helpers import get_regex_images
+from .helpers import get_regex_images
 import numpy as np
 from skimage.morphology._util import _offsets_to_raveled_neighbors
 import torch
