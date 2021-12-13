@@ -14,7 +14,7 @@ from .training_experiments import get_experiment_dict, run_experiment
 import zarr
 from skimage.io import imread
 import os
-
+import pathlib
 
 # ------------
 # Train widget
@@ -172,13 +172,12 @@ def read_with_correct_modality(path):
 # Load New Data
 # -------------
 
-@magic_factory(
-    image_path={'widget_type': 'FileEdit'},
-    labels_dir={'widget_type': 'FileEdit'},
-)
-def initiate_training_data(image_path, labels_dir):
+# use mode='d' for directories, see:
+# https://napari.org/magicgui/usage/_autosummary/magicgui.widgets.FileEdit.html
+@magic_factory( image_path={'mode': 'd'}, labels_dir={'mode': 'd'})
+def initiate_training_data(image_path: pathlib.Path, labels_dir: pathlib.Path):
     # load a single image into 4D array and initiate a labels layer (in file as tesnorstore)
-    pass 
+    pass
 
 
 @magic_factory(
@@ -191,7 +190,7 @@ def add_image_data(images_path, max_number=None):
 
 
 # -------------------
-# Segement with Model
+# Segment with Model
 # -------------------
 
 
@@ -217,7 +216,6 @@ def predict_output_chunks_widget(
         margin: str = '(0, 0, 0)',
         unet: str = 'default', 
         use_default_unet: bool = True,
-        auto_call_watershed: bool = True,
         state: Dict = None,
         ):
     if type(chunk_size) is str:
@@ -229,78 +227,100 @@ def predict_output_chunks_widget(
     viewer = napari_viewer
     layer = input_volume_layer
     ndim = len(chunk_size)
-    slicing = viewer.dims.current_step[:-ndim]
-    state['slicing'] = slicing
-    input_volume = np.asarray(layer.data[slicing]).astype(np.float32)
-    input_volume /= np.max(input_volume)
-    if 'unet-output' in state:  # not our first rodeo
-        state['unet-worker'].quit()  # in case we are running on another slice
-        if state['self'].call_watershed is not None:
-            state['self'].call_watershed.enabled = False
-        output_volume = state['unet-output']
-        output_volume[:] = 0
-        layerlist = state['unet-output-layers']
-        for layer in layerlist:
-            layer.refresh()
-    else:
-        output_volume = np.zeros((5,) + input_volume.shape, dtype=np.float32)
-        state['unet-output'] = output_volume
-        scale = np.asarray(layer.scale)[-ndim:]
-        translate = np.asarray(layer.translate[-ndim:])
-        offsets = -0.5 * scale * np.eye(5, 3)  # offset affinities, not masks
-        layerlist = viewer.add_image(
-                output_volume,
-                channel_axis=0,
-                name=['z-aff', 'y-aff', 'x-aff', 'mask', 'centroids'],
-                scale=scale,
-                translate=list(translate + offsets),
-                colormap=[
-                        'bop purple',
-                        'bop orange',
-                        'bop orange',
-                        'bop blue',
-                        'gray',
-                        ],
-                visible=[False] * 4 + [True],
+    # for loop starts here (for all time points:)
+    for t in input_volume_layer.shape[0]:
+        viewer.dims.current_step = (t, 0, 0, 0)
+        slicing = viewer.dims.current_step
+        state['slicing'] = slicing
+        input_volume = np.asarray(layer.data[slicing]).astype(np.float32)
+        input_volume /= np.max(input_volume)
+        if 'unet-output' in state:  # not our first rodeo
+            state['unet-worker'].quit()  # in case we are running on another slice
+            output_volume = state['unet-output']
+            output_volume[:] = 0
+            layerlist = state['unet-output-layers']
+        else:
+            # TODO: find the training experiment prep code and hardcode so 
+            #       that the first five output channels are used for segmentation
+            #       --> will discard any auxillary training channels subsequent to prediction
+                        # TODO: change the prediction code to discard channels after the 
+                        #       first five
+            output_volume = np.zeros((5,) + input_volume.shape, dtype=np.float32) 
+            state['unet-output'] = output_volume
+
+        def clear_volume(event=None):
+            output_volume[:] = 0
+            for ly in layerlist:
+                ly.refresh()
+        # 
+        # for each timepoint:
+        # - launch prediciton worker
+        # - launch watershed worker
+
+        # define the PREDICTION WORKER
+        launch_prediction_worker = thread_worker(
+                predict_output_chunks,
+                connect={
+                        'yielded': [ly.refresh for ly in layerlist],
+                        #'returned': return_callbacks,
+                        'returned': watershed_worker.start,
+                        'aborted': clear_volume,
+                        }
                 )
-        state['unet-output-layers'] = layerlist
-        state['scale'] = scale
-        state['translate'] = translate
-    return_callbacks = [state['self'].add_watershed_widgets]
-    if auto_call_watershed:
-        return_callbacks.append(lambda _: state['self'].call_watershed())
 
-    def clear_volume(event=None):
-        output_volume[:] = 0
-        for ly in layerlist:
-            ly.refresh()
-    # 
-    launch_prediction_worker = thread_worker(
-            predict_output_chunks,
-            connect={
-                    'yielded': [ly.refresh for ly in layerlist],
-                    'returned': return_callbacks,
-                    'aborted': clear_volume,
-                    }
+        # define the WATERSHED WORKER
+        launch_watershed_worker = thread_worker(
+            ws.segment_output_image, 
+            start_thread=False
+        )
+        output = np.pad(
+            np.zeros(output_volume.shape[1:], dtype=np.uint32),
+            1,
+            mode='constant',
+            constant_values=0,
             )
-    worker = launch_prediction_worker(
-            unet, input_volume, chunk_size, output_volume, margin=margin, use_default_unet=use_default_unet
-            )
-    state['unet-worker'] = worker
-    current_step = viewer.dims.current_step
-    currstep_event = viewer.dims.events.current_step
+        crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
+        output_layer = state.get('output-layer')
+        if output_layer is None or output_layer not in napari_viewer.layers:
+            output_layer = viewer.add_labels(
+                    output[crop],
+                    name='watershed',
+                    scale=state['scale'],
+                    translate=state['translate'],
+                    )
+            state['output-layer'] = output_layer
+        else:
+            output_layer.data = output[crop]
+        watershed_worker = launch_watershed_worker(
+            output_volume,
+            affinities_channels=(0, 1, 2),
+            thresholding_channel=3,
+            centroids_channel=4,
+            out=output.ravel(),
+        )
+        # start PREDICTION WORKER, which *should* start the WATERSHED WORKER once returned
+        worker = launch_prediction_worker(
+                unet, input_volume, chunk_size, output_volume, margin=margin, use_default_unet=use_default_unet
+                )
+        state['unet-worker'] = worker
+        current_step = viewer.dims.current_step
+        currstep_event = viewer.dims.events.current_step
 
-    @self_destructing_callback(disconnect=currstep_event.disconnect)
-    def quit_worker(event):
-        new_step = event.value
-        if new_step[:-ndim] != current_step[:-ndim]:  # new slice
-            worker.quit()
 
-    currstep_event.connect(quit_worker)
-    clear_once = self_destructing_callback(
-            clear_volume, currstep_event.disconnect
-            )
-    currstep_event.connect(clear_once)
+        # Callback madness ??? 
+        @self_destructing_callback(disconnect=currstep_event.disconnect)
+        def quit_worker(event):
+            new_step = event.value
+            if new_step[:-ndim] != current_step[:-ndim]:  # new slice
+                worker.quit()
+
+        currstep_event.connect(quit_worker)
+        clear_once = self_destructing_callback(
+                clear_volume, currstep_event.disconnect
+                )
+        currstep_event.connect(clear_once)
+
+        # - save watershed to open zarr file??
 
 
 @magic_factory

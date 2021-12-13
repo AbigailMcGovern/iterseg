@@ -99,6 +99,8 @@ def predict_output_chunks(
     chunk_starts, chunk_crops = make_chunks(
             input_volume.shape[-ndim:], chunk_size, margin=margin
             )
+    # add a for-loop for higher dims (input-volume.shape[:-ndim])
+    # OR, do it one level up
     for start, crop in tqdm(list(zip(chunk_starts, chunk_crops))):
         sl = tuple(
                 slice(start0, start0 + step)
