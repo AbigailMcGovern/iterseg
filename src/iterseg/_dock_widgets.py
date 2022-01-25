@@ -16,6 +16,9 @@ from skimage.io import imread
 import os
 import pathlib
 
+import dask.array as da
+from .metrics import get_accuracy_metrics
+
 # ------------
 # Train widget
 # ------------
@@ -211,9 +214,9 @@ def self_destructing_callback(callback, disconnect):
 
 def predict_output_chunks_widget(
         napari_viewer,
-        input_volume_layer: napari.layers.Image,
+        input_volume_layer: napari.types.ImageData,
         chunk_size: str = '(10, 256, 256)',
-        margin: str = '(0, 0, 0)',
+        margin: str = '(1, 64, 64)',
         unet: str = 'default', 
         use_default_unet: bool = True,
         state: Dict = None,
@@ -226,19 +229,31 @@ def predict_output_chunks_widget(
         state = {}
     viewer = napari_viewer
     layer = input_volume_layer
+    scale = viewer.layers[0].scale[1:] # lazy assumption that all layers have the same scale 
+    translate = viewer.layers[0].translate[1:] # and same translate 
+    state['scale'] = scale
+    state['translate'] = translate
+    if isinstance(layer, da.Array):
+        zarr_layer = zarr.zeros(layer.shape)
+        for t in range(layer.shape[0]):
+            zarr_layer[t, ...] = layer[t, ...].compute()
+        layer = zarr_layer
+    print(type(layer), layer.shape)
     ndim = len(chunk_size)
     # for loop starts here (for all time points:)
-    for t in input_volume_layer.shape[0]:
+    for t in range(input_volume_layer.shape[0]):
         viewer.dims.current_step = (t, 0, 0, 0)
-        slicing = viewer.dims.current_step
+        slicing = (t, slice(None), slice(None), slice(None))
         state['slicing'] = slicing
-        input_volume = np.asarray(layer.data[slicing]).astype(np.float32)
+        input_volume = np.asarray(layer[slicing]).astype(np.float32)
         input_volume /= np.max(input_volume)
         if 'unet-output' in state:  # not our first rodeo
             state['unet-worker'].quit()  # in case we are running on another slice
             output_volume = state['unet-output']
             output_volume[:] = 0
-            layerlist = state['unet-output-layers']
+            #
+            # layerlist = state['unet-output-layers']
+            
         else:
             # TODO: find the training experiment prep code and hardcode so 
             #       that the first five output channels are used for segmentation
@@ -250,23 +265,13 @@ def predict_output_chunks_widget(
 
         def clear_volume(event=None):
             output_volume[:] = 0
-            for ly in layerlist:
-                ly.refresh()
+            # we won't be using napari layers to show unet predictions
+            #for ly in layerlist:
+                #ly.refresh()
         # 
         # for each timepoint:
         # - launch prediciton worker
         # - launch watershed worker
-
-        # define the PREDICTION WORKER
-        launch_prediction_worker = thread_worker(
-                predict_output_chunks,
-                connect={
-                        'yielded': [ly.refresh for ly in layerlist],
-                        #'returned': return_callbacks,
-                        'returned': watershed_worker.start,
-                        'aborted': clear_volume,
-                        }
-                )
 
         # define the WATERSHED WORKER
         launch_watershed_worker = thread_worker(
@@ -292,12 +297,23 @@ def predict_output_chunks_widget(
         else:
             output_layer.data = output[crop]
         watershed_worker = launch_watershed_worker(
-            output_volume,
+            output,
             affinities_channels=(0, 1, 2),
             thresholding_channel=3,
             centroids_channel=4,
             out=output.ravel(),
         )
+
+        # define the PREDICTION WORKER
+        launch_prediction_worker = thread_worker(
+                predict_output_chunks,
+                connect={
+                        #'yielded': [ly.refresh for ly in layerlist],
+                        #'returned': return_callbacks,
+                        'returned': watershed_worker.start,
+                        'aborted': clear_volume,
+                        }
+                )
         # start PREDICTION WORKER, which *should* start the WATERSHED WORKER once returned
         worker = launch_prediction_worker(
                 unet, input_volume, chunk_size, output_volume, margin=margin, use_default_unet=use_default_unet
@@ -434,6 +450,37 @@ class UNetPredictWidget(widgets.Container):
         self.call_watershed.enabled = True
 
 
+# -----------------------
+# Segmentation Assessment
+# -----------------------
+
+@magic_factory(
+    save_dir={'widget_type': 'FileEdit'}
+)
+def assess_segmentation(
+    napari_viewer: napari.Viewer,
+    ground_truth: napari.types.LabelsData, 
+    model_segmentation: napari.types.LabelsData, 
+    variation_of_information: bool, 
+    average_precision: bool, 
+    object_count: bool, 
+    diagnostics: bool,
+    save_dir: str, 
+    save_prefix: str,
+    ):
+    # save info
+    os.makedirs(save_dir, exist_ok=True)
+    data_path = os.path.join(save_dir, save_prefix + '_metrics.csv')
+    # need to get the slices from the model-produced layer
+    ms_layer = find_matching_labels(napari_viewer, model_segmentation)
+    slices = ms_layer.metadata.get('slices')
+    df = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
+                              variation_of_information, average_precision, 
+                              object_count, data_path)
+    # generate plots
+    # plot_metrics(...)
+    # plot_diagnostics(...)
+
 
 # -------------------
 # Validation Analysis
@@ -445,13 +492,34 @@ def validation_analysis(
     model_1: napari.types.LabelsData,
     model_2: napari.types.LabelsData,
     model_3: napari.types.LabelsData,
-    model_4: napari.types.labelsData, 
+    model_4: napari.types.LabelsData, 
     ):
     # want to compute quality metrics etc for every chunk of data
     # passed through the pipeline 
     # therefore need the unet chunks info
     # probs get input chunk info from unet state dict
     pass
+
+
+# ----------------
+# Helper Functions
+# ----------------
+
+def find_matching_labels(
+    napari_viewer: napari.Viewer, 
+    labels
+    ):
+    # indices for the non background labels
+    lab_idxs = np.where(labels > 0)
+    matches = []
+    for i, l in enumerate(napari_viewer.layers):
+        if isinstance(l, napari.layers.labels.labels.Labels):
+            res = np.min(l.data[lab_idxs] == labels[lab_idxs])
+            if res == True:
+                matches.append(i)
+    if len(matches) > 1:
+        print('multiple identical labels found... using the first...')
+    return napari_viewer.layers[matches[0]]
 
 
 

@@ -184,7 +184,29 @@ def generate_ap_scores(df, name, directory, suffix, thresholds=(0.3, 0.35, 0.4, 
 
 
 
-    
+# ----------------
+# Plotting Methods
+# ----------------
+def plot_accuracy_metrics(
+    df: pd.DataFrame,
+    prefix: str,
+    save_dir: str,
+    vi: bool, 
+    ap: bool, 
+    nd: bool,
+    ):
+    pass
+
+
+
+
+
+
+
+# ---------
+# OLD STUFF
+# ---------
+
 def segmentation_VI_plots(data_dir, seg_info, exp_name, out_name):
     vi_train_paths, vi_train_names = _get_VI_paths(data_dir, 
                                                    seg_info, 
