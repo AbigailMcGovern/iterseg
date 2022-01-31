@@ -17,7 +17,7 @@ import os
 import pathlib
 
 import dask.array as da
-from .metrics import get_accuracy_metrics
+from .metrics import get_accuracy_metrics, plot_accuracy_metrics
 
 # ------------
 # Train widget
@@ -464,9 +464,10 @@ def assess_segmentation(
     variation_of_information: bool, 
     average_precision: bool, 
     object_count: bool, 
-    diagnostics: bool,
+    #diagnostics: bool,
     save_dir: str, 
     save_prefix: str,
+    show: bool
     ):
     # save info
     os.makedirs(save_dir, exist_ok=True)
@@ -474,12 +475,17 @@ def assess_segmentation(
     # need to get the slices from the model-produced layer
     ms_layer = find_matching_labels(napari_viewer, model_segmentation)
     slices = ms_layer.metadata.get('slices')
-    df = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
+    data = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
                               variation_of_information, average_precision, 
                               object_count, data_path)
     # generate plots
-    # plot_metrics(...)
+    plot_accuracy_metrics(data, save_prefix, save_dir, show)
+
+    # Diagnostic plots
     # plot_diagnostics(...)
+    #TODO:
+    # - get image metrics relating to quality/information/randomness/edges
+    # - get object metrics for segmentation 
 
 
 # -------------------

@@ -154,13 +154,13 @@ def _get_linestyle(lis):
 
 
 def VI_plot(
-            path, 
+            df, 
             cond_ent_over="GT | Output",  
             cond_ent_under="Output | GT", 
             lab="",
             save=False, 
             show=True):
-    df = pd.read_csv(path)
+    #df = pd.read_csv(path)
     overseg = df[cond_ent_over].values
     o_groups = [cond_ent_over] * len(overseg)
     underseg = df[cond_ent_under].values
@@ -294,6 +294,32 @@ def plot_experiment_no_diff(paths, names, title, out_dir, out_name, col_name='n_
         plt.show()
     
 
+def plot_count_difference(df, title, out_dir, out_name, col_name='Count difference', show=True):
+    plt.rcParams.update({'font.size': 16})
+    out_path = os.path.join(out_dir, out_name)
+    groups = []
+    n_diff = df[col_name].values
+    for i, df in enumerate(dfs):
+        vals = df[col_name].values
+        n_diff.append(vals)
+        groups += [names[i]] * len(df)
+    x = 'Experiment'
+    data = {
+        x : groups, 
+        'n_diff' : np.concatenate(n_diff), 
+    }
+    data = pd.DataFrame(data)
+    o = 'h'
+    pal = 'Set2'
+    sigma = .2
+    f, ax = plt.subplots(figsize=(10, 10))
+    pt.RainCloud(x=x, y='n_diff', data=data, palette=pal, bw=sigma,
+                 width_viol=.6, ax=ax, orient=o)
+    plt.title(title)
+    f.savefig(out_path)
+    if show:
+        plt.show()
+
 
 if __name__ == '__main__':
     import re
@@ -354,3 +380,5 @@ if __name__ == '__main__':
     #v_path = os.path.join(dir_, v_name)
     #loss_function = 'Weighted BCE Loss (2, 1, 1)'
     #save_loss_plot(path, loss_function, v_path)
+
+
