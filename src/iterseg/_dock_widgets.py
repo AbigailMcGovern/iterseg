@@ -212,132 +212,87 @@ def self_destructing_callback(callback, disconnect):
     return run_once_callback
 
 
+# magicfactory, forget the container below
 def predict_output_chunks_widget(
         napari_viewer,
-        input_volume_layer: napari.types.ImageData,
+        input_volume_layer: napari.layers.Image,
         chunk_size: str = '(10, 256, 256)',
         margin: str = '(1, 64, 64)',
         unet: str = 'default', 
         use_default_unet: bool = True,
-        state: Dict = None,
+        num_pred_channels: int = 5,  # can probs get this from last unet layer
         ):
     if type(chunk_size) is str:
         chunk_size = ast.literal_eval(chunk_size)
     if type(margin) is str:
         margin = ast.literal_eval(margin)
-    if state is None:
-        state = {}
     viewer = napari_viewer
-    layer = input_volume_layer
+    data = input_volume_layer.data
     scale = viewer.layers[0].scale[1:] # lazy assumption that all layers have the same scale 
     translate = viewer.layers[0].translate[1:] # and same translate 
-    state['scale'] = scale
-    state['translate'] = translate
-    if isinstance(layer, da.Array):
-        zarr_layer = zarr.zeros(layer.shape)
-        for t in range(layer.shape[0]):
-            zarr_layer[t, ...] = layer[t, ...].compute()
-        layer = zarr_layer
-    print(type(layer), layer.shape)
+    print(type(data), data.shape)
     ndim = len(chunk_size)
-    # for loop starts here (for all time points:)
-    for t in range(input_volume_layer.shape[0]):
+    # For now: use in-memory zarr array. When working, we can open on-disk
+    # array with tensorstore so that we can paint into it even as the network
+    # is writing to other timepoints. (exploding head emoji)
+    output_labels = zarr.zeros(
+        data.shape, chunks=(1,) + data.shape[1:], dtype=np.int32
+        )
+    # in the future, we can add neural net output as an in-memory zarr array
+    # that only displays the currently predicted output timepoint, and zeroes
+    # out the rest. This is because the output volumes are otherwise
+    # extremely large.
+    output_volume = np.zeros((num_pred_channels,) + data.shape[1:], dtype=np.float32) 
+    # Best would be to use napari.util.progress to have nested progress bars
+    # here (one for timepoints, one for chunks, maybe one for watershed)
+    output_layer = viewer.add_labels(
+            output_labels,
+            name='watershed',
+            scale=scale,
+            translate=translate,
+            )
+    # thread_worker()
+
+
+def predict_segment_loop():
+    for t in range(data.shape[0]):
+        print(t)
         viewer.dims.current_step = (t, 0, 0, 0)
         slicing = (t, slice(None), slice(None), slice(None))
-        state['slicing'] = slicing
-        input_volume = np.asarray(layer[slicing]).astype(np.float32)
+        input_volume = np.asarray(data[slicing]).astype(np.float32)
         input_volume /= np.max(input_volume)
-        if 'unet-output' in state:  # not our first rodeo
-            state['unet-worker'].quit()  # in case we are running on another slice
-            output_volume = state['unet-output']
-            output_volume[:] = 0
-            #
-            # layerlist = state['unet-output-layers']
             
-        else:
-            # TODO: find the training experiment prep code and hardcode so 
-            #       that the first five output channels are used for segmentation
-            #       --> will discard any auxillary training channels subsequent to prediction
-                        # TODO: change the prediction code to discard channels after the 
-                        #       first five
-            output_volume = np.zeros((5,) + input_volume.shape, dtype=np.float32) 
-            state['unet-output'] = output_volume
-
-        def clear_volume(event=None):
-            output_volume[:] = 0
-            # we won't be using napari layers to show unet predictions
-            #for ly in layerlist:
-                #ly.refresh()
-        # 
-        # for each timepoint:
-        # - launch prediciton worker
-        # - launch watershed worker
-
-        # define the WATERSHED WORKER
-        launch_watershed_worker = thread_worker(
-            ws.segment_output_image, 
-            start_thread=False
-        )
-        output = np.pad(
+        current_output = np.pad(
             np.zeros(output_volume.shape[1:], dtype=np.uint32),
             1,
             mode='constant',
             constant_values=0,
             )
         crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-        output_layer = state.get('output-layer')
-        if output_layer is None or output_layer not in napari_viewer.layers:
-            output_layer = viewer.add_labels(
-                    output[crop],
-                    name='watershed',
-                    scale=state['scale'],
-                    translate=state['translate'],
-                    )
-            state['output-layer'] = output_layer
-        else:
-            output_layer.data = output[crop]
-        watershed_worker = launch_watershed_worker(
-            output,
+        watershed_worker = create_watershed_worker(
+            output_volume[slicing],
             affinities_channels=(0, 1, 2),
             thresholding_channel=3,
             centroids_channel=4,
-            out=output.ravel(),
+            out=current_output.ravel(),
         )
 
         # define the PREDICTION WORKER
         launch_prediction_worker = thread_worker(
                 predict_output_chunks,
-                connect={
-                        #'yielded': [ly.refresh for ly in layerlist],
-                        #'returned': return_callbacks,
-                        'returned': watershed_worker.start,
-                        'aborted': clear_volume,
-                        }
+                connect={'returned': watershed_worker.start},
                 )
         # start PREDICTION WORKER, which *should* start the WATERSHED WORKER once returned
         worker = launch_prediction_worker(
                 unet, input_volume, chunk_size, output_volume, margin=margin, use_default_unet=use_default_unet
                 )
-        state['unet-worker'] = worker
-        current_step = viewer.dims.current_step
-        currstep_event = viewer.dims.events.current_step
-
-
-        # Callback madness ??? 
-        @self_destructing_callback(disconnect=currstep_event.disconnect)
-        def quit_worker(event):
-            new_step = event.value
-            if new_step[:-ndim] != current_step[:-ndim]:  # new slice
-                worker.quit()
-
-        currstep_event.connect(quit_worker)
-        clear_once = self_destructing_callback(
-                clear_volume, currstep_event.disconnect
-                )
-        currstep_event.connect(clear_once)
-
-        # - save watershed to open zarr file??
-
+        ws.segment_output_image(output_volume[slicing],
+            affinities_channels=(0, 1, 2),
+            thresholding_channel=3,
+            centroids_channel=4,
+            out=current_output.ravel(),)
+        output_volume[:] = 0
+        yield
 
 @magic_factory
 def copy_data(
@@ -355,99 +310,23 @@ def copy_data(
     dst_data[slicing] = src_data
 
 
-def segment_from_prediction_widget(
-        napari_viewer: napari.viewer.Viewer,
-        prediction: np.ndarray,
-        state: Optional[Dict] = None,
-        ):
-    viewer = napari_viewer
-    output = np.pad(
-            np.zeros(prediction.shape[1:], dtype=np.uint32),
-            1,
-            mode='constant',
-            constant_values=0,
-            )
-    ndim = output.ndim
-    crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-    output_layer = state.get('output-layer')
-    if output_layer is None or output_layer not in napari_viewer.layers:
-        output_layer = viewer.add_labels(
-                output[crop],
-                name='watershed',
-                scale=state['scale'],
-                translate=state['translate'],
-                )
-        state['output-layer'] = output_layer
-    else:
-        output_layer.data = output[crop]
-
-    def clear_output(event=None):
-        output[:] = 0
-        output_layer.refresh()
-
-    launch_segmentation = thread_worker(
-            ws.segment_output_image,
-            connect={'finished': output_layer.refresh},
-            )
-    worker = launch_segmentation(
-            prediction,
-            affinities_channels=(0, 1, 2),
-            thresholding_channel=3,
-            centroids_channel=4,
-            out=output.ravel(),
-            )
-    current_step = viewer.dims.current_step
-    currstep_event = viewer.dims.events.current_step
-
-    @self_destructing_callback(disconnect=currstep_event.disconnect)
-    def quit_worker_and_clear(event):
-        new_step = event.value
-        if new_step[:-ndim] != current_step[:-ndim]:  # new slice
-            worker.quit()
-
-    currstep_event.connect(quit_worker_and_clear)
-    clear_once = self_destructing_callback(
-            clear_output, currstep_event.disconnect
-            )
-    currstep_event.connect(clear_once)
-
-
 class UNetPredictWidget(widgets.Container):
     def __init__(self, napari_viewer):
-        self._state = {'self': self}
         super().__init__(labels=False)
         self.predict_widget = widgets.FunctionGui(
                 predict_output_chunks_widget,
                 param_options=dict(
                         napari_viewer={'visible': False},
                         chunk_size={'widget_type': 'LiteralEvalLineEdit'},
-                        state={'visible': False},
                         unet={'widget_type': 'FileEdit'}, 
                         use_default_unet={'widget_type': 'CheckBox'} 
                         )
                 )
         self.append(widgets.Label(value='U-net prediction'))
         self.append(self.predict_widget)
-        self.predict_widget.state.bind(self._state)
         self.predict_widget.napari_viewer.bind(napari_viewer)
         self.viewer = napari_viewer
         self.call_watershed = None
-
-    def add_watershed_widgets(self, volume):
-        if self.call_watershed is None:
-            self.call_watershed = widgets.FunctionGui(
-                    segment_from_prediction_widget,
-                    call_button='Run Watershed',
-                    param_options=dict(
-                            prediction={'visible': False},
-                            state={'visible': False},
-                            )
-                    )
-            self.append(widgets.Label(value='Affinity watershed'))
-            self.append(self.call_watershed)
-        self.call_watershed.prediction.bind(volume)
-        self.call_watershed.state.bind(self._state)
-        self.call_watershed.enabled = True
 
 
 # -----------------------
