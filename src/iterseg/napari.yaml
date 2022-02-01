@@ -1,0 +1,25 @@
+name: iterseg
+schema_version: 0.1.0
+contributions:
+  commands:
+  - id: iterseg.UNetPredictWidget
+    title: Create U Net Predict Widget
+    python_name: iterseg._dock_widgets:UNetPredictWidget
+  - id: iterseg.copy_data
+    title: Create copy_data
+    python_name: iterseg._dock_widgets:copy_data
+  - id: iterseg.train_from_viewer
+    title: Create train_from_viewer
+    python_name: iterseg._dock_widgets:train_from_viewer
+  - id: iterseg.load_train_data
+    title: Create load_train_data
+    python_name: iterseg._dock_widgets:load_train_data
+  widgets:
+  - command: iterseg.UNetPredictWidget
+    display_name: U Net Predict Widget
+  - command: iterseg.copy_data
+    display_name: copy_data
+  - command: iterseg.train_from_viewer
+    display_name: train_from_viewer
+  - command: iterseg.load_train_data
+    display_name: load_train_data

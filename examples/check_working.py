@@ -1,7 +1,8 @@
 import napari
 import numpy as np
+import zarr
 
-arr = np.random.random((3, 20, 256, 256))
+arr = zarr.open('/Users/amcg0011/GitRepos/iterseg/src/iterseg/data/example.zarr')
 
 viewer = napari.view_image(arr)
 qtwidget, widget = viewer.window.add_plugin_dock_widget(

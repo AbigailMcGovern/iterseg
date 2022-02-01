@@ -4,11 +4,11 @@ from typing import Optional, Dict, Union
 import numpy as np
 import napari
 from napari.qt import thread_worker
-from napari_plugin_engine import napari_hook_implementation
+#from napari_plugin_engine import napari_hook_implementation
 from magicgui import widgets, magic_factory
 import toolz as tz
 
-from .predict import predict_output_chunks
+from .predict import predict_output_chunks, make_chunks
 from . import watershed as ws
 from .training_experiments import get_experiment_dict, run_experiment
 import zarr
@@ -221,6 +221,7 @@ def predict_output_chunks_widget(
         unet: str = 'default', 
         use_default_unet: bool = True,
         num_pred_channels: int = 5,  # can probs get this from last unet layer
+        save_path: str = './'
         ):
     if type(chunk_size) is str:
         chunk_size = ast.literal_eval(chunk_size)
@@ -236,7 +237,9 @@ def predict_output_chunks_widget(
     # array with tensorstore so that we can paint into it even as the network
     # is writing to other timepoints. (exploding head emoji)
     output_labels = zarr.zeros(
-        data.shape, chunks=(1,) + data.shape[1:], dtype=np.int32
+        data.shape, 
+        chunks=(1,) + data.shape[1:], 
+        dtype=np.int32, 
         )
     # in the future, we can add neural net output as an in-memory zarr array
     # that only displays the currently predicted output timepoint, and zeroes
@@ -251,17 +254,51 @@ def predict_output_chunks_widget(
             scale=scale,
             translate=translate,
             )
-    # thread_worker()
+
+    def handle_yields(yielded_val):
+        print(f"Completed timepoint {yielded_val}")
+
+    chunks = make_chunks(data[0, ...].shape, chunk_size, margin)
+    n_chunks = len(chunks[0])
+
+    launch_worker = thread_worker(
+        predict_segment_loop,
+        progress={'total': n_chunks * data.shape[0], 'desc': 'thread-progress'},
+        # this does not preclude us from connecting other functions to any of the
+        # worker signals (including `yielded`)
+        connect={'yielded': handle_yields},
+    )
+
+    worker = launch_worker(
+        data, 
+        viewer, 
+        output_volume, 
+        unet, 
+        chunk_size, 
+        margin, 
+        use_default_unet,
+        ndim, 
+        output_labels
+    )
 
 
-def predict_segment_loop():
+def predict_segment_loop(
+        data, 
+        viewer, 
+        output_volume, 
+        unet, 
+        chunk_size, 
+        margin, 
+        use_default_unet,
+        ndim, 
+        output_labels
+    ):
     for t in range(data.shape[0]):
         print(t)
         viewer.dims.current_step = (t, 0, 0, 0)
         slicing = (t, slice(None), slice(None), slice(None))
         input_volume = np.asarray(data[slicing]).astype(np.float32)
         input_volume /= np.max(input_volume)
-            
         current_output = np.pad(
             np.zeros(output_volume.shape[1:], dtype=np.uint32),
             1,
@@ -269,30 +306,26 @@ def predict_segment_loop():
             constant_values=0,
             )
         crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-        watershed_worker = create_watershed_worker(
-            output_volume[slicing],
+        # predict using unet
+        predict_output_chunks(
+            unet, 
+            input_volume, 
+            chunk_size, 
+            output_volume, 
+            margin=margin, 
+            use_default_unet=use_default_unet
+            )
+        ws.segment_output_image(
+            output_volume, #[slicing],
             affinities_channels=(0, 1, 2),
             thresholding_channel=3,
             centroids_channel=4,
-            out=current_output.ravel(),
-        )
-
-        # define the PREDICTION WORKER
-        launch_prediction_worker = thread_worker(
-                predict_output_chunks,
-                connect={'returned': watershed_worker.start},
-                )
-        # start PREDICTION WORKER, which *should* start the WATERSHED WORKER once returned
-        worker = launch_prediction_worker(
-                unet, input_volume, chunk_size, output_volume, margin=margin, use_default_unet=use_default_unet
-                )
-        ws.segment_output_image(output_volume[slicing],
-            affinities_channels=(0, 1, 2),
-            thresholding_channel=3,
-            centroids_channel=4,
-            out=current_output.ravel(),)
+            out=current_output.ravel())
+        output_labels[t, ...] = current_output[crop]
         output_volume[:] = 0
-        yield
+        yield t
+
+
 
 @magic_factory
 def copy_data(
@@ -355,8 +388,8 @@ def assess_segmentation(
     ms_layer = find_matching_labels(napari_viewer, model_segmentation)
     slices = ms_layer.metadata.get('slices')
     data = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
-                              variation_of_information, average_precision, 
-                              object_count, data_path)
+                                variation_of_information, average_precision, 
+                                object_count, data_path)
     # generate plots
     plot_accuracy_metrics(data, save_prefix, save_dir, show)
 
@@ -413,7 +446,7 @@ def find_matching_labels(
 # -------------------
 
 
-@napari_hook_implementation
-def napari_experimental_provide_dock_widget():
+#@napari_hook_implementation
+#def napari_experimental_provide_dock_widget():
     # you can return either a single widget, or a sequence of widgets
-    return [UNetPredictWidget, copy_data, train_from_viewer, load_train_data]
+    #return [UNetPredictWidget, copy_data, train_from_viewer, load_train_data]

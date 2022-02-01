@@ -95,6 +95,7 @@ def predict_output_chunks(
         u = load_unet()
     else:
         u = load_unet(unet)
+    #print(u)
     ndim = len(chunk_size)
     chunk_starts, chunk_crops = make_chunks(
             input_volume.shape[-ndim:], chunk_size, margin=margin
@@ -110,10 +111,12 @@ def predict_output_chunks(
         if torch.cuda.is_available() and not IGNORE_CUDA:
             tensor = tensor.cuda()
         predicted_array = u(tensor).detach().cpu().numpy()
+        #print(predicted_array.shape)
         # add slice(None) for the 5 channels
         cr = (slice(None),) + tuple(slice(i, j) for i, j in crop)
         output_volume[(slice(None),) + sl][cr] = predicted_array[(0,) + cr]
-        yield
+        #yield
+    #print('op: ', output_volume.shape, np.max(output_volume))
     return output_volume
 
 

@@ -297,12 +297,12 @@ def plot_experiment_no_diff(paths, names, title, out_dir, out_name, col_name='n_
 def plot_count_difference(df, title, out_dir, out_name, col_name='Count difference', show=True):
     plt.rcParams.update({'font.size': 16})
     out_path = os.path.join(out_dir, out_name)
-    groups = []
+    groups = ['model', ] * len(df)
     n_diff = df[col_name].values
-    for i, df in enumerate(dfs):
-        vals = df[col_name].values
-        n_diff.append(vals)
-        groups += [names[i]] * len(df)
+    #for i, df in enumerate(dfs):
+     #   vals = df[col_name].values
+      #  n_diff.append(vals)
+       # groups += [names[i]] * len(df)
     x = 'Experiment'
     data = {
         x : groups, 
