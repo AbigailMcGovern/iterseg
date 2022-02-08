@@ -1,4 +1,6 @@
 import ast
+from email.mime import base
+from sys import prefix
 from typing import Optional, Dict, Union
 
 import numpy as np
@@ -7,6 +9,7 @@ from napari.qt import thread_worker
 #from napari_plugin_engine import napari_hook_implementation
 from magicgui import widgets, magic_factory
 import toolz as tz
+from torch import save
 
 from .predict import predict_output_chunks, make_chunks
 from . import watershed as ws
@@ -18,6 +21,8 @@ import pathlib
 
 import dask.array as da
 from .metrics import get_accuracy_metrics, plot_accuracy_metrics
+
+import tensorstore as ts
 
 # ------------
 # Train widget
@@ -48,7 +53,8 @@ def train_from_viewer(
     epochs=4,
     validation_prop=0.2, 
     n_each=50,
-    output_dir='.'
+    output_dir='.', 
+    save_labels=True,
     ):
     assert image_4D_stack.shape == labels_4D_stack.shape
     channels_list = construct_channels_list(affinities_extent, mask_prediction, 
@@ -56,12 +62,36 @@ def train_from_viewer(
     condition_name = [training_name, ]
     image_list = [image_4D_stack[i, ...] for i in range(image_4D_stack.shape[0])]
     labels_list = [labels_4D_stack[i, ...] for i in range(labels_4D_stack.shape[0])]
-    conditions_list = construct_conditions_list(image_list, loss_function, learning_rate, epochs, scale)
+    conditions_list = construct_conditions_list(image_list, loss_function, 
+                                                learning_rate, epochs, scale)
     exp_dict = get_experiment_dict(channels_list, condition_name, 
                                    conditions_list=conditions_list, 
                                    validation_prop=validation_prop, 
                                    n_each=n_each)
-    run_experiment(exp_dict, image_list, labels_list, output_dir)
+    u_path = run_experiment(exp_dict, image_list, labels_list, output_dir)
+    if save_labels:
+        save_path = os.path.join(output_dir, training_name + '_labels-prediction.zarr')
+    else:
+        save_path = None
+    labels_layer = predict_output_chunks_widget(viewer, image_4D_stack, unet=u_path[0], 
+                                                use_default_unet=False, save_path=save_path, 
+                                                name=training_name)
+    meta = {
+        'unet' : u_path[0], 
+        'chunk_size' : (10, 256, 256), 
+        'margin' : (1, 64, 64), 
+        'mask_prediction' : mask_prediction, 
+        'centre_prediction' : centre_prediciton, 
+        'affinities_extent' : affinities_extent, 
+        'loss_function' : loss_function, 
+        'output_dir' : output_dir, 
+        'learning_rate' : learning_rate, 
+        'epochs' : epochs, 
+        'validation_prop' : validation_prop, 
+        'n_each' : n_each, 
+        'labels_path' : save_path
+    }
+    labels_layer.metadata.update()
 
 
 def construct_channels_list(
@@ -107,48 +137,72 @@ def construct_conditions_list(
     return [condition_dict, ]
 
 
-# ---------------
-# Load train data
-# ---------------
+# -------------------------
+# Load Image or Labels Data
+# -------------------------
 
 @magic_factory(
-    images_path={'widget_type': 'FileEdit'}, 
-    labels_path={'widget_type': 'FileEdit'}, 
+    data_path={'widget_type': 'FileEdit'}, 
+    data_type={'choices': ['individual frames', 'image stacks']},
+    layer_name={'widget_type' : 'LineEdit'},
+    layer_type={'choices': ['Image', 'Labels']},
     scale={'widget_type' : 'LiteralEvalLineEdit'}, 
-    type={'widget_type' : 'LineEdit'}
 )
-def load_train_data(
+def load_data(
     napari_viewer: napari.viewer.Viewer, 
-    images_path: str, 
-    labels_path: str,
-    scale: tuple,
-    type: str = 'Training'
+    data_path: str, 
+    # name_pattern: str, 
+    data_type: str,
+    layer_name:str,
+    layer_type: str,
+    scale: tuple =(1, 1, 1),
+    translate: tuple =(0, 0, 0),
     ):
-    if not os.path.isdir(images_path):
-        images_paths = [images_path, ]
+
+    _load_data(napari_viewer, data_path, data_type, 
+                layer_name, layer_type, scale, translate)
+
+
+def _load_data(
+    napari_viewer: napari.viewer.Viewer, 
+    data_path: str, 
+    # name_pattern: str, 
+    data_type: str,
+    layer_name:str,
+    layer_type: str,
+    scale: tuple =(1, 1, 1),
+    translate: tuple =(0, 0, 0),
+    ):
+
+    if not os.path.isdir(data_path):
+        data_paths = [data_path, ]
     else:
-        images_paths = [os.path.join(images_path, f) for f in os.listdir(images_path)]
-    if not os.path.isdir(labels_path):
-        labels_paths = [labels_path, ]
-    else:
-        labels_paths = [os.path.join(labels_path, f) for f in os.listdir(labels_path)]
-    # check that there are the same number of files in each path
-    assert len(images_paths) == len(labels_paths)
-    # go though every image and read in
-    img0 = read_with_correct_modality(images_paths[0]) # probs need to use tensorstore
-    im_shape = img0.shape
-    del img0
-    lab0 = read_with_correct_modality(labels_paths[0])
-    lb_shape = lab0.shape
-    del lab0
-    assert im_shape == lb_shape
-    assert len(im_shape) == 3
-    image_stack = generate_4D_stack(images_paths, im_shape)
-    labels_stack = generate_4D_stack(labels_paths, lb_shape)
-    napari_viewer.add_image(image_stack, scale=scale, name=f'{type} Images')
-    napari_viewer.layers['Training Images'].metadata.update({'images_paths' : images_paths, 'labels_paths' : labels_paths})
-    napari_viewer.add_labels(labels_stack, scale=scale, name=f'{type} Ground Truth')
-    napari_viewer.layers['Training Ground Truth'].metadata.update({'images_paths' : images_paths, 'labels_paths' : labels_paths})
+        data_paths = os.listdir(data_path)
+    imgs = []
+    for p in data_paths:
+        im = read_with_correct_modality(p)
+        imgs.append(im)
+    # if data is in stack/s (4D stacks of 3D frames)
+    if data_type == 'image stacks':
+        imgs = np.concatenate(imgs)
+    # if data is in individual 3D frames
+    if data_type == 'individual frames':
+        imgs = np.stack(imgs)
+    if layer_type == 'Image':
+        napari_viewer.add_image(imgs, scale=(1, ) + scale, name=layer_name, translate=(0,) + translate)
+    if layer_type == 'Labels':
+        napari_viewer.add_labels(imgs, scale= (1, ) + scale, name=layer_name, translate=(0,) + translate)
+
+
+def generate_4D_stack(path_list, shape):
+    images = []
+    for p in path_list:
+        im  = read_with_correct_modality(p)
+        assert shape == im.shape
+        images.append(im)
+    images = np.stack(images)
+    assert len(images.shape) == 4
+    return images
 
 
 def generate_4D_stack(path_list, shape):
@@ -166,35 +220,8 @@ def read_with_correct_modality(path):
     if path.endswith('.tif') or path.endswith('.tiff'):
         im = imread(path)
     elif path.endswith('.zar') or path.endswith('.zarr'):
-        im = zarr.open(path)
+        im = zarr.creation.open_array(path, 'r')
     return im
-
-
-
-# -------------
-# Load New Data
-# -------------
-
-# use mode='d' for directories, see:
-# https://napari.org/magicgui/usage/_autosummary/magicgui.widgets.FileEdit.html
-@magic_factory( image_path={'mode': 'd'}, labels_dir={'mode': 'd'})
-def initiate_training_data(image_path: pathlib.Path, labels_dir: pathlib.Path):
-    # load a single image into 4D array and initiate a labels layer (in file as tesnorstore)
-    pass
-
-
-@magic_factory(
-    images_path={'widget_type': 'FileEdit'}, 
-    max_number={'widget_type' : 'LiteralEvalLineEdit'}
-)
-def add_image_data(images_path, max_number=None):
-    pass
-
-
-
-# -------------------
-# Segment with Model
-# -------------------
 
 
 
@@ -216,13 +243,22 @@ def self_destructing_callback(callback, disconnect):
 def predict_output_chunks_widget(
         napari_viewer,
         input_volume_layer: napari.layers.Image,
+        labels_layer: napari.layers.Labels, 
         chunk_size: str = '(10, 256, 256)',
         margin: str = '(1, 64, 64)',
-        unet: str = 'default', 
-        use_default_unet: bool = True,
+        which_unet: str = 'default',
+        unet: str = 'to choose file select above: file', 
         num_pred_channels: int = 5,  # can probs get this from last unet layer
-        save_path: str = './'
+        save_path: Union[str, None] = None,
+        name: str = 'labels-prediction'
         ):
+    use_default_unet = which_unet == 'default'
+    if which_unet == 'file':
+        unet = unet
+    elif which_unet == 'labels layer':
+        unet = labels_layer.metadata['unet']
+        chunk_size = labels_layer.metadata['chunk_size']
+        margin = labels_layer.metadata['margin']
     if type(chunk_size) is str:
         chunk_size = ast.literal_eval(chunk_size)
     if type(margin) is str:
@@ -250,7 +286,7 @@ def predict_output_chunks_widget(
     # here (one for timepoints, one for chunks, maybe one for watershed)
     output_layer = viewer.add_labels(
             output_labels,
-            name='watershed',
+            name=name,
             scale=scale,
             translate=translate,
             )
@@ -258,12 +294,12 @@ def predict_output_chunks_widget(
     def handle_yields(yielded_val):
         print(f"Completed timepoint {yielded_val}")
 
-    chunks = make_chunks(data[0, ...].shape, chunk_size, margin)
-    n_chunks = len(chunks[0])
+    #chunks = make_chunks(data[0, ...].shape, chunk_size, margin)
+    #n_chunks = len(chunks[0])
 
     launch_worker = thread_worker(
         predict_segment_loop,
-        progress={'total': n_chunks * data.shape[0], 'desc': 'thread-progress'},
+        progress={'total': data.shape[0], 'desc': 'thread-progress'},
         # this does not preclude us from connecting other functions to any of the
         # worker signals (including `yielded`)
         connect={'yielded': handle_yields},
@@ -280,6 +316,10 @@ def predict_output_chunks_widget(
         ndim, 
         output_labels
     )
+    if save_path is not None:
+        zarr.save(save_path, output_labels)
+
+    return output_layer
 
 
 def predict_segment_loop(
@@ -326,7 +366,8 @@ def predict_segment_loop(
         yield t
 
 
-
+# ------------------------------------------------
+# What was copy_data for... might need to ask Juan
 @magic_factory
 def copy_data(
         napari_viewer: napari.viewer.Viewer,
@@ -341,6 +382,7 @@ def copy_data(
     slice_ = napari_viewer.dims.current_step
     slicing = slice_[:ndim_dst - ndim_src]
     dst_data[slicing] = src_data
+# ------------------------------------------------
 
 
 class UNetPredictWidget(widgets.Container):
@@ -352,7 +394,7 @@ class UNetPredictWidget(widgets.Container):
                         napari_viewer={'visible': False},
                         chunk_size={'widget_type': 'LiteralEvalLineEdit'},
                         unet={'widget_type': 'FileEdit'}, 
-                        use_default_unet={'widget_type': 'CheckBox'} 
+                        which_unet={'choices': ['default', 'file', 'labels layer']}
                         )
                 )
         self.append(widgets.Label(value='U-net prediction'))
@@ -360,6 +402,112 @@ class UNetPredictWidget(widgets.Container):
         self.predict_widget.napari_viewer.bind(napari_viewer)
         self.viewer = napari_viewer
         self.call_watershed = None
+
+
+# -----------------------
+# Ground Truth Generation
+# -----------------------
+
+@magic_factory()
+def generate_ground_truth(
+    napari_veiwer: napari.Viewer,
+    labels_to_correct: napari.layers.Labels, 
+    new_layer_name: str = 'Ground truth', 
+    save_path: str= './ground_truth.zarr'
+):  
+    chunks = (1, ) + tuple(labels_to_correct.data.shape[1:])
+    labels = zarr.zeros_like(labels_to_correct.data, chunks=chunks)
+    labels[:] = labels_to_correct.data
+    zarr.save(save_path, labels)
+    spec = {
+         'driver': 'zarr',
+         'kvstore': {
+             'driver': 'file',
+             'path': save_path,
+         },
+         'metadata' : {
+             'dataType': str(labels.dtype),
+             'dimensions': list(labels.shape),
+             'blockSize': list(chunks),
+         },
+         'create': False,
+         'delete_existing': False,
+     }
+    labels = ts.open(spec)
+    napari_veiwer.add_labels(
+        labels, 
+        name=new_layer_name, 
+        scale=labels_to_correct.scale, 
+        translate=labels_to_correct.translate)
+
+
+# --------------
+# Combine Layers
+# --------------
+
+@magic_factory()
+def combine_layers(
+    napari_viewer: napari.Viewer, 
+    base_layer: napari.layers.Layer, 
+    to_append: napari.layers.Layer, 
+    save_dir: Union[str, None] = None, 
+    save_prefix: str = '', 
+    save_all: bool = True, # save all or just new
+    save_indivdually: bool =  False, 
+    number_from: int = 0
+):
+    '''
+    Combine a stack of labels volumes with a second stack. 
+
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+    base_layer: napari.layers.Layer
+        Layer to which the second layer will be added.
+    to_append: napari.layers.Labels
+        Layer to append to the base layer.
+    save_dir: str or None
+        If not none, the output will be saved to this 
+        directory.
+    save_prefix: str
+        If save_dir is not None, this is the name that will 
+        be used in saving the images.
+    save_all: bool
+        If save_dir is not None, should all of the images in 
+        the stack be saved? If False, only the appended images
+        will be saved
+    save_individually: bool
+        Should images be saved as a series of volumes or a single 
+        4D stack?
+    number_from: int
+        if save_individually, images will be saved each with a unique 
+        number, starting with this one (e.g., range starting from 0)
+    '''
+    base_layer.data = np.concatenate([base_layer.data, to_append.data])
+    # what to do about metadata
+    # should probably assert that the layer properties match
+
+    # saving stuff... yay
+    if save_dir is not None:
+        if not save_all:
+            if not save_indivdually:
+                save_path = os.path.join(save_dir, save_prefix + '.zarr')
+                zarr.save(save_path, to_append.data)
+            else:
+                for t in range(to_append.data.shape[0]):
+                    save_path = os.path.join(save_dir, 
+                                        save_prefix + f'_{t + number_from}.zarr')
+                    zarr.save(save_path, to_append.data[t, ...])
+        else:
+            if not save_indivdually:
+                save_path = os.path.join(save_dir, save_prefix + '.zarr')
+                zarr.save(save_path, base_layer.data)
+            else:
+                for t in range(base_layer.data.shape[0]):
+                    save_path = os.path.join(save_dir, 
+                                        save_prefix + f'_{t + number_from}.zarr')
+                    zarr.save(save_path, base_layer.data[t, ...])
+
 
 
 # -----------------------
@@ -371,23 +519,27 @@ class UNetPredictWidget(widgets.Container):
 )
 def assess_segmentation(
     napari_viewer: napari.Viewer,
-    ground_truth: napari.types.LabelsData, 
-    model_segmentation: napari.types.LabelsData, 
-    variation_of_information: bool, 
-    average_precision: bool, 
-    object_count: bool, 
+    ground_truth: napari.layers.Image, 
+    model_segmentation: napari.layers.Labels, 
+    chunk_size: tuple = (10, 256, 256), 
+    margin: tuple = (1, 64, 64),
+    variation_of_information: bool = True, 
+    average_precision: bool = True, 
+    object_count: bool = True, 
     #diagnostics: bool,
-    save_dir: str, 
-    save_prefix: str,
-    show: bool
+    save_dir: str = './', 
+    save_prefix: str = 'segmentation-metrics',
+    show: bool = True
     ):
     # save info
     os.makedirs(save_dir, exist_ok=True)
     data_path = os.path.join(save_dir, save_prefix + '_metrics.csv')
     # need to get the slices from the model-produced layer
-    ms_layer = find_matching_labels(napari_viewer, model_segmentation)
-    slices = ms_layer.metadata.get('slices')
-    data = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
+    meta = model_segmentation.metadata
+    chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
+    shape = model_segmentation.data.shape
+    slices = get_slices_from_chunks(shape, chunk_size, margin)
+    data = get_accuracy_metrics(slices, ground_truth.data, model_segmentation.data, 
                                 variation_of_information, average_precision, 
                                 object_count, data_path)
     # generate plots
@@ -399,6 +551,33 @@ def assess_segmentation(
     # - get image metrics relating to quality/information/randomness/edges
     # - get object metrics for segmentation 
 
+
+def chunk_n_margin(meta, chunk_size, margin):
+    mcs = meta.get('chunk_size')
+    if mcs is not None:
+        chunk_size = mcs
+    mmg = meta.get('margin')
+    if mmg is not None:
+        margin = mmg
+    return chunk_size, margin
+
+
+def get_slices_from_chunks(arr_shape, chunk_size, margin):
+    chunk_starts, chunk_crops = make_chunks(arr_shape, chunk_size, margin)
+    if len(arr_shape) <= 3:
+        ts = range(1)
+    else:
+        ts = range(arr_shape[0])
+    slices = []
+    for t in ts:
+        for start, crop in list(zip(chunk_starts, chunk_crops)):
+            sl = (slice(t, t+1), ) + tuple(
+                    slice(start0, start0 + step)
+                    for start0, step in zip(start, chunk_size)
+                    )
+            cr = tuple(slice(i, j) for i, j in crop)
+            slices.append((sl, cr)) # useage: 4d_labels[sl][cr]
+    return slices
 
 # -------------------
 # Validation Analysis

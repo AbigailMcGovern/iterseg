@@ -25,10 +25,10 @@ def run_experiment(
     upper_dir = Path(train_kwargs['out_dir']).parents[1]
     unet_path_log = upper_dir / 'unet_paths.txt'
     s = [unets[key]['unet_path'] for key in unets.keys()]
-    s = str(s)
     with open(unet_path_log, 'a') as f:
-        f.write(s)
-    return unets
+        st = str(s)
+        f.write(st)
+    return s
 
 
 #def train_experiment(

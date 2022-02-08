@@ -70,9 +70,9 @@ def get_accuracy_metrics(
     scores = {'VI: GT | Output' : [], 'VI: Output | GT' : [], 'Count difference' : []}
     IoU_dict = generate_IoU_dict()
     scores.update(IoU_dict)
-    for s_ in slices:
-        gt = gt_data[s_]
-        mr = model_result[s_]
+    for s_, c_ in slices:
+        gt = gt_data[s_][c_]
+        mr = model_result[s_][c_]
         if VI:
             vi = variation_of_information(gt, mr)
             scores['VI: GT | Output'].append(vi[0])
