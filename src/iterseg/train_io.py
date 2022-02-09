@@ -374,8 +374,8 @@ def save_from_chunk_dict(chunk_dict, out_dir, name):
     chunk_dict['name'] = name
     # save the images and gt
     for i in range(len(x)):
-        save_chunk(out_dir, x[i], ids[i], '_image.tif')
-        save_chunk(out_dir, gt[i], ids[i], '_GT.tif')
+        save_chunk(out_dir, i, x, ids, '_image.zarr')
+        save_chunk(out_dir, i, gt, ids, '_GT.zarr')
     # make subdirectories for training labels and save
     labs_paths = {}
     for key in labs_keys:
@@ -386,7 +386,7 @@ def save_from_chunk_dict(chunk_dict, out_dir, name):
         os.makedirs(path, exist_ok=True)
         y = ys[key]
         for j in range(len(y)):
-            save_chunk(path, y[j], ids[j], '_labels.tif')
+            save_chunk(path, i, y, ids, '_labels.zarr')
         i += 1
     chunk_dict['save_dir'] = out_dir
     chunk_dict['labels_dirs'] = labs_paths
@@ -433,6 +433,11 @@ def load_tensor_from_numpy(i, ls):
     chunk = torch.from_numpy(chunk)
     return chunk
 
+
+def load_tensor_from_zarr(i, ls):
+    chunk = np.array(ls[i])
+    chunk = torch.from_numpy(chunk)
+    return chunk
 
 # ------------------------
 # Concatenate chunk_dicts
@@ -510,11 +515,15 @@ def normalise_data(image):
     return im
 
 
-def save_chunk(out_dir, data, ID, type_suffix):
+def save_chunk(out_dir, i, data_list, ID_list, type_suffix):
+    ID = ID_list[i]
+    data = data_list[i]
     name = ID + type_suffix
     path = os.path.join(out_dir, name)
-    with TiffWriter(path) as tiff:
-        tiff.write(data)
+    zarr.save(path, data)
+    # want to use out of memory zarr rather than in memory array
+    arr = zarr.open_array(path, 'r')
+    data_list[i] = arr
 
 
 # -----------------------------------------------------------------------------

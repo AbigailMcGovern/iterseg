@@ -41,8 +41,8 @@ import tensorstore as ts
     )
 def train_from_viewer(
     viewer: napari.viewer.Viewer, 
-    image_4D_stack: napari.types.ImageData, 
-    labels_4D_stack: napari.types.LabelsData,
+    image_stack: napari.layers.Image, 
+    labels_stack: napari.layers.Labels,
     scale, 
     mask_prediction='mask', 
     centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P
@@ -56,6 +56,8 @@ def train_from_viewer(
     output_dir='.', 
     save_labels=True,
     ):
+    image_4D_stack = image_stack.data
+    labels_4D_stack = labels_stack.data
     assert image_4D_stack.shape == labels_4D_stack.shape
     channels_list = construct_channels_list(affinities_extent, mask_prediction, 
                                         centre_prediciton)
@@ -73,8 +75,8 @@ def train_from_viewer(
         save_path = os.path.join(output_dir, training_name + '_labels-prediction.zarr')
     else:
         save_path = None
-    labels_layer = predict_output_chunks_widget(viewer, image_4D_stack, unet=u_path[0], 
-                                                use_default_unet=False, save_path=save_path, 
+    labels_layer = predict_output_chunks_widget(viewer, image_stack, None, unet=u_path[0], 
+                                                which_unet='file', save_path=save_path, 
                                                 name=training_name)
     meta = {
         'unet' : u_path[0], 

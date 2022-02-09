@@ -21,3 +21,5 @@ _load_data(viewer, data_path=ground_truth, data_type='individual frames',
                 layer_name='ground truth', layer_type='Labels', scale=(4, 1, 1))
 
 napari.run()
+
+# /home/abigail/data/iterseg/220209_iterseg_1

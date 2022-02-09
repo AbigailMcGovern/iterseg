@@ -12,7 +12,7 @@ from tifffile import TiffWriter
 import torch 
 import torch.nn as nn
 import torch.optim as optim
-from .train_io import get_train_data, load_train_data, load_dask_as_tensor, load_tensor_from_numpy
+from .train_io import get_train_data, load_train_data, load_dask_as_tensor, load_tensor_from_zarr
 from tqdm import tqdm
 from .unet import UNet, ForkedUNet
 
@@ -343,8 +343,8 @@ def _set_epoch_if_epoch_weighted(loss, e, verbose=True):
 
 def _train_step(i, xs, ys, ids, device, unet, optimiser, 
                 loss, loss_dict, e, channels):
-    x = load_tensor_from_numpy(i, xs)
-    y = load_tensor_from_numpy(i, ys)
+    x = load_tensor_from_zarr(i, xs)
+    y = load_tensor_from_zarr(i, ys)
     x, y = _prep_x_y(x, y, device)
     optimiser.zero_grad()
     y_hat = unet(x.float())
@@ -369,8 +369,8 @@ def _validate(v_xs, v_ys, v_ids, device, unet, v_loss, progress,
     with torch.no_grad():
         v_y_hats = []
         for i in range(len(v_xs)):
-            v_x = load_tensor_from_numpy(i, v_xs)
-            v_y = load_tensor_from_numpy(i, v_ys)
+            v_x = load_tensor_from_zarr(i, v_xs)
+            v_y = load_tensor_from_zarr(i, v_ys)
             v_x, v_y = _prep_x_y(v_x, v_y, device)
             v_y_hat = unet(v_x.float())
             v_y_hats.append(v_y_hat)
