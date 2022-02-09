@@ -177,8 +177,9 @@ def _load_data(
     if not os.path.isdir(data_path):
         data_paths = [data_path, ]
     else:
-        data_paths = os.listdir(data_path)
+        data_paths = [os.path.join(data_path, f) for f in os.listdir(data_path)]
     imgs = []
+    data_paths = sorted(data_paths)
     for p in data_paths:
         im = read_with_correct_modality(p)
         imgs.append(im)
