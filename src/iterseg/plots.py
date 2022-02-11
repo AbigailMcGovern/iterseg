@@ -179,17 +179,16 @@ def VI_plot(
     f, ax = plt.subplots(figsize=(12, 10))
     pt.RainCloud(x = x, y = y, data = data, palette = pal, bw = sigma,
                  width_viol = .6, ax = ax, orient = o)
-    p = Path(path)
+    p = Path(save)
     plt.title(p.stem)
     if save:
-        save_path = os.path.join(p.parents[0], p.stem + lab + '_VI_rainclout_plot.png')
-        plt.savefig(save_path, bbox_inches='tight')
+        plt.savefig(save, bbox_inches='tight')
     if show:
         plt.show()
 
 
 def experiment_VI_plots(
-        paths, 
+        dfs, 
         names, 
         title,
         out_name,
@@ -202,8 +201,7 @@ def experiment_VI_plots(
     groups = []
     ce0 = []
     ce1 = []
-    for i, p in enumerate(paths):
-        df = pd.read_csv(p)
+    for i, df in enumerate(dfs):
         ce0.append(df[cond_ent_over].values)
         ce1.append(df[cond_ent_under].values)
         groups += [names[i]] * len(df)
@@ -294,9 +292,8 @@ def plot_experiment_no_diff(paths, names, title, out_dir, out_name, col_name='n_
         plt.show()
     
 
-def plot_count_difference(df, title, out_dir, out_name, col_name='Count difference', show=True):
+def plot_count_difference(df, title, out_path, col_name='Count difference', show=True):
     plt.rcParams.update({'font.size': 16})
-    out_path = os.path.join(out_dir, out_name)
     groups = ['model', ] * len(df)
     n_diff = df[col_name].values
     #for i, df in enumerate(dfs):
@@ -306,7 +303,7 @@ def plot_count_difference(df, title, out_dir, out_name, col_name='Count differen
     x = 'Experiment'
     data = {
         x : groups, 
-        'n_diff' : np.concatenate(n_diff), 
+        'n_diff' : n_diff, 
     }
     data = pd.DataFrame(data)
     o = 'h'

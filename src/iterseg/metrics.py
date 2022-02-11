@@ -6,14 +6,15 @@ import numpy as np
 import os
 from pathlib import Path
 import re
-from .plots import VI_plot, plot_AP, plot_count_difference
+from .plots import VI_plot, plot_AP, plot_count_difference, experiment_VI_plots
 
 import pandas as pd
 from skimage.measure import regionprops
 from skimage.metrics import variation_of_information
 import umetrics
 
-from napari.types import LabelsData
+import napari
+from scipy import stats
 
 # compare model result with ground truth validation data (not seen by network)
 
@@ -44,12 +45,13 @@ from napari.types import LabelsData
 
 def get_accuracy_metrics(
     slices, 
-    gt_data: LabelsData,
-    model_result: LabelsData,
+    gt_data: napari.layers.Labels,
+    model_result:  napari.layers.Labels,
     VI: bool = True, 
     AP: bool = True, 
     ND: bool = True,
     out_path = None,
+    exclude_chunks: int = 10, 
     ):
     '''
     Parameters:
@@ -71,24 +73,36 @@ def get_accuracy_metrics(
     IoU_dict = generate_IoU_dict()
     scores.update(IoU_dict)
     for s_, c_ in slices:
-        gt = gt_data[s_][c_]
-        mr = model_result[s_][c_]
-        if VI:
-            vi = variation_of_information(gt, mr)
-            scores['VI: GT | Output'].append(vi[0])
-            scores['VI: Output | GT'].append(vi[1])
-        if AP:
-            generate_IoU_data(gt, mr, scores)
-        if ND:
-            n_gt = np.unique(gt).size
-            n_mr = np.unique(mr).size
-            nd = n_gt - n_mr
-            scores['Count difference'].append(nd)
-    to_keep = [key for key in scores.keys() if len(scores[key]) == len(slices)]
+        gt = gt_data.data[s_]
+        gt = np.squeeze(gt)[c_]
+        n_objects = np.unique(gt).size
+        if n_objects > exclude_chunks + 1:
+            mr = model_result.data[s_]
+            mr = np.squeeze(mr)[c_]
+            #print('n_objects', n_objects)
+            if VI:
+                vi = variation_of_information(gt, mr)
+                scores['VI: GT | Output'].append(vi[0])
+                scores['VI: Output | GT'].append(vi[1])
+            if AP:
+                generate_IoU_data(gt, mr, scores)
+            if ND:
+                n_mr = np.unique(mr).size
+                #print('n_mr', n_mr, np.unique(mr), mr.shape, mr.dtype)
+                nd = n_mr - n_objects
+                nd = nd / n_objects # as a proportion might be more informative
+                scores['Count difference'].append(nd)
+    lens = {key : len(scores[key]) for key in scores.keys()}
+    to_keep = [key for key in scores.keys() if lens[key] > 1]
     new_scores = {key : scores[key] for key in to_keep}
     new_scores = pd.DataFrame(new_scores)
+    statistics = single_sample_stats(new_scores, to_keep, model_result.name)
+    new_scores['model_name'] = [model_result.name, ] * len(new_scores)
     if out_path is not None:
         new_scores.to_csv(out_path)
+        p = Path(out_path)
+        stat_path = os.path.join(p.parents[0], p.stem + '_stats.csv')
+        statistics.to_csv(stat_path)
     ap_scores = None
     if AP:
         if out_path is not None:
@@ -96,7 +110,27 @@ def get_accuracy_metrics(
             name = Path(out_path).stem
             suffix = 'AP-scores'
         ap_scores = generate_ap_scores(new_scores, name, save_dir, suffix)
-    return new_scores, ap_scores
+        ap_scores['model_name'] = [model_result.name, ] * len(ap_scores)
+    return (new_scores, ap_scores), statistics
+
+
+def single_sample_stats(df, columns, name):
+    results = {}
+    alpha = 0.95
+    for c in columns:
+        sample_mean = np.mean(df[c].values)
+        sample_sem = stats.sem(df[c].values)
+        degrees_freedom = df[c].values.size - 1
+        CI = stats.t.interval(alpha, degrees_freedom, sample_mean, sample_sem)
+        n = str(c) + '_'
+        results[n + 'mean'] = sample_mean
+        results[n + 'sem'] = sample_sem
+        results[n + '95pcntCI_2-5pcnt'] = CI[0]
+        results[n + '95pcntCI_97-5pcnt'] = CI[1]
+    results = pd.DataFrame(results)
+    results['model_name'] = [name, ] * len(df)
+    return results
+
 
 
 def metrics_for_stack(directory, name, seg, gt):
@@ -231,9 +265,34 @@ def plot_accuracy_metrics(
         plot_AP(df1, [prefix, ], save_path, 'Average precision', show=show)
     if 'Count difference' in cols0:
         #save_path = os.path.join(save_dir, prefix + '_count-plot.png')
-        plot_count_difference(df0, 'Object count difference', save_dir)
+        plot_count_difference(df0, 'Object count difference', save_dir, show=show)
 
-    
+
+
+def plot_model_comparison(
+    data_0: list, 
+    data_1: list, 
+    names: list,
+    prefix: str, 
+    save_dir: str, 
+    AP: bool, 
+    VI: bool, 
+    ND: bool,
+    show: bool = True,
+    ):
+    if AP:
+        plot_AP(data_1, names, save_dir, 'Comparison of model average precsision', show=show)
+    if VI: # 
+        experiment_VI_plots(data_0, names, 'Comparison of Model VI subscores', prefix, save_dir, 
+        cond_ent_over='VI: GT | Output', cont_ent_under='VI: GT | Output', show=show)
+    if ND:
+        pass
+
+
+
+# ---------
+# OLD STUFF
+# ---------
 
 def _get_index(chans, opts):
     idx = []

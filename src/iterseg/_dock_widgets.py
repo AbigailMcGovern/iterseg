@@ -1,28 +1,19 @@
 import ast
-from email.mime import base
-from sys import prefix
-from typing import Optional, Dict, Union
-
+from typing import Union
 import numpy as np
 import napari
 from napari.qt import thread_worker
-#from napari_plugin_engine import napari_hook_implementation
 from magicgui import widgets, magic_factory
 import toolz as tz
-from torch import save
-
 from .predict import predict_output_chunks, make_chunks
 from . import watershed as ws
 from .training_experiments import get_experiment_dict, run_experiment
 import zarr
 from skimage.io import imread
 import os
-import pathlib
-
-import dask.array as da
 from .metrics import get_accuracy_metrics, plot_accuracy_metrics
-
 import tensorstore as ts
+import pandas as pd
 
 # ------------
 # Train widget
@@ -176,7 +167,7 @@ def _load_data(
     translate: tuple =(0, 0, 0),
     ):
 
-    if not os.path.isdir(data_path):
+    if not os.path.isdir(data_path) or data_path.endswith('.zarr'):
         data_paths = [data_path, ]
     else:
         data_paths = [os.path.join(data_path, f) for f in os.listdir(data_path)]
@@ -186,7 +177,7 @@ def _load_data(
         im = read_with_correct_modality(p)
         imgs.append(im)
     # if data is in stack/s (4D stacks of 3D frames)
-    if data_type == 'image stacks':
+    if data_type == 'image stacks' and len(imgs) > 1:
         imgs = np.concatenate(imgs)
     # if data is in individual 3D frames
     if data_type == 'individual frames':
@@ -270,7 +261,7 @@ def predict_output_chunks_widget(
     data = input_volume_layer.data
     scale = viewer.layers[0].scale[1:] # lazy assumption that all layers have the same scale 
     translate = viewer.layers[0].translate[1:] # and same translate 
-    print(type(data), data.shape)
+    #print(type(data), data.shape)
     ndim = len(chunk_size)
     # For now: use in-memory zarr array. When working, we can open on-disk
     # array with tensorstore so that we can paint into it even as the network
@@ -337,7 +328,7 @@ def predict_segment_loop(
         output_labels
     ):
     for t in range(data.shape[0]):
-        print(t)
+        #print(t)
         viewer.dims.current_step = (t, 0, 0, 0)
         slicing = (t, slice(None), slice(None), slice(None))
         input_volume = np.asarray(data[slicing]).astype(np.float32)
@@ -522,7 +513,7 @@ def combine_layers(
 )
 def assess_segmentation(
     napari_viewer: napari.Viewer,
-    ground_truth: napari.layers.Image, 
+    ground_truth: napari.layers.Labels, 
     model_segmentation: napari.layers.Labels, 
     chunk_size: tuple = (10, 256, 256), 
     margin: tuple = (1, 64, 64),
@@ -532,7 +523,8 @@ def assess_segmentation(
     #diagnostics: bool,
     save_dir: str = './', 
     save_prefix: str = 'segmentation-metrics',
-    show: bool = True
+    show: bool = True, 
+    exclude_chunks_less_than: int = 10,
     ):
     # save info
     os.makedirs(save_dir, exist_ok=True)
@@ -542,9 +534,17 @@ def assess_segmentation(
     chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
     shape = model_segmentation.data.shape
     slices = get_slices_from_chunks(shape, chunk_size, margin)
-    data = get_accuracy_metrics(slices, ground_truth.data, model_segmentation.data, 
-                                variation_of_information, average_precision, 
-                                object_count, data_path)
+    data, stats = model_assessment(
+        ground_truth, 
+        model_segmentation, 
+        save_prefix,
+        chunk_size, 
+        margin, 
+        save_dir,
+        variation_of_information, 
+        average_precision, 
+        object_count, 
+        exclude_chunks_less_than)
     # generate plots
     plot_accuracy_metrics(data, save_prefix, save_dir, show)
 
@@ -553,6 +553,33 @@ def assess_segmentation(
     #TODO:
     # - get image metrics relating to quality/information/randomness/edges
     # - get object metrics for segmentation 
+
+
+def model_assessment(
+    ground_truth: napari.layers.Labels, 
+    model_segmentation: napari.layers.Labels, 
+    save_prefix: str,
+    chunk_size: tuple, 
+    margin: tuple, 
+    save_dir: str,
+    variation_of_information: bool, 
+    average_precision: bool, 
+    object_count: bool, 
+    exclude_chunks_less_than: int 
+    ):
+    # save info
+    os.makedirs(save_dir, exist_ok=True)
+    n = model_segmentation.name
+    data_path = os.path.join(save_dir, save_prefix + f'_{n}_metrics.csv')
+    # need to get the slices from the model-produced layer
+    meta = model_segmentation.metadata
+    chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
+    shape = model_segmentation.data.shape
+    slices = get_slices_from_chunks(shape, chunk_size, margin)
+    data, stats = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
+                                variation_of_information, average_precision, 
+                                object_count, data_path, exclude_chunks_less_than)
+    return data, stats
 
 
 def chunk_n_margin(meta, chunk_size, margin):
@@ -566,11 +593,13 @@ def chunk_n_margin(meta, chunk_size, margin):
 
 
 def get_slices_from_chunks(arr_shape, chunk_size, margin):
-    chunk_starts, chunk_crops = make_chunks(arr_shape, chunk_size, margin)
     if len(arr_shape) <= 3:
         ts = range(1)
+        fshape = arr_shape
     else:
         ts = range(arr_shape[0])
+        fshape = arr_shape[1:]
+    chunk_starts, chunk_crops = make_chunks(fshape, chunk_size, margin)
     slices = []
     for t in ts:
         for start, crop in list(zip(chunk_starts, chunk_crops)):
@@ -588,18 +617,53 @@ def get_slices_from_chunks(arr_shape, chunk_size, margin):
 
 @magic_factory()
 def validation_analysis(
-    images: napari.types.ImageData,
-    model_1: napari.types.LabelsData,
-    model_2: napari.types.LabelsData,
-    model_3: napari.types.LabelsData,
-    model_4: napari.types.LabelsData, 
+    ground_truth: napari.layers.Labels,
+    model_1: Union[None, napari.layers.Labels],
+    model_2: Union[None, napari.layers.Labels],
+    model_3: Union[None, napari.layers.Labels],
+    model_4: Union[None, napari.layers.Labels],
+    chunk_size: tuple = (10, 256, 256), 
+    margin: tuple = (1, 64, 64),
+    variation_of_information: bool = True, 
+    average_precision: bool = True, 
+    object_count: bool = True, 
+    #diagnostics: bool,
+    save_dir: str = './', 
+    save_prefix: str = 'segmentation-metrics',
+    show: bool = True, 
+    exclude_chunks_less_than: int = 10, 
     ):
-    # want to compute quality metrics etc for every chunk of data
-    # passed through the pipeline 
-    # therefore need the unet chunks info
-    # probs get input chunk info from unet state dict
-    pass
-
+    models = [model_1, model_2, model_3, model_4]
+    models = [m for m in models if m is not None]
+    data_0 = [] # data for each image chunk
+    data_1 = [] # data for average precision graph (i.e., computed from above)
+    model_stats = []
+    for model in models:
+        d, s = model_assessment(
+            ground_truth, 
+            model, 
+            save_prefix,
+            chunk_size, 
+            margin, 
+            save_dir,
+            variation_of_information, 
+            average_precision, 
+            object_count, 
+            exclude_chunks_less_than)
+        data_0.append(d[0])
+        data_1.append(d[1])
+        model_stats.append(s)
+    # plot
+    ...
+    # statistics
+    ...
+    # concatenate dfs xxxx
+    data_0 = pd.concat(data_0)
+    data_1 = pd.concat(data_1)
+    model_stats = pd.concat(model_stats)
+    # save results
+    ...
+#print()
 
 # ----------------
 # Helper Functions
