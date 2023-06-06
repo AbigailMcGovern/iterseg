@@ -1,23 +1,19 @@
 import ast
-from typing import Optional, Dict, Union
-
+from typing import Union
 import numpy as np
 import napari
 from napari.qt import thread_worker
-from napari_plugin_engine import napari_hook_implementation
 from magicgui import widgets, magic_factory
 import toolz as tz
-
-from .predict import predict_output_chunks
+from .predict import predict_output_chunks, make_chunks
 from . import watershed as ws
 from .training_experiments import get_experiment_dict, run_experiment
 import zarr
 from skimage.io import imread
 import os
-import pathlib
-
-import dask.array as da
-from .metrics import get_accuracy_metrics
+from .metrics import get_accuracy_metrics, plot_accuracy_metrics
+import tensorstore as ts
+import pandas as pd
 
 # ------------
 # Train widget
@@ -36,8 +32,8 @@ from .metrics import get_accuracy_metrics
     )
 def train_from_viewer(
     viewer: napari.viewer.Viewer, 
-    image_4D_stack: napari.types.ImageData, 
-    labels_4D_stack: napari.types.LabelsData,
+    image_stack: napari.layers.Image, 
+    labels_stack: napari.layers.Labels,
     scale, 
     mask_prediction='mask', 
     centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P
@@ -48,20 +44,47 @@ def train_from_viewer(
     epochs=4,
     validation_prop=0.2, 
     n_each=50,
-    output_dir='.'
+    output_dir='.', 
+    save_labels=True,
     ):
+    image_4D_stack = image_stack.data
+    labels_4D_stack = labels_stack.data
     assert image_4D_stack.shape == labels_4D_stack.shape
     channels_list = construct_channels_list(affinities_extent, mask_prediction, 
                                         centre_prediciton)
     condition_name = [training_name, ]
     image_list = [image_4D_stack[i, ...] for i in range(image_4D_stack.shape[0])]
     labels_list = [labels_4D_stack[i, ...] for i in range(labels_4D_stack.shape[0])]
-    conditions_list = construct_conditions_list(image_list, loss_function, learning_rate, epochs, scale)
+    conditions_list = construct_conditions_list(image_list, loss_function, 
+                                                learning_rate, epochs, scale)
     exp_dict = get_experiment_dict(channels_list, condition_name, 
                                    conditions_list=conditions_list, 
                                    validation_prop=validation_prop, 
                                    n_each=n_each)
-    run_experiment(exp_dict, image_list, labels_list, output_dir)
+    u_path = run_experiment(exp_dict, image_list, labels_list, output_dir)
+    if save_labels:
+        save_path = os.path.join(output_dir, training_name + '_labels-prediction.zarr')
+    else:
+        save_path = None
+    labels_layer = predict_output_chunks_widget(viewer, image_stack, None, unet=u_path[0], 
+                                                which_unet='file', save_path=save_path, 
+                                                name=training_name)
+    meta = {
+        'unet' : u_path[0], 
+        'chunk_size' : (10, 256, 256), 
+        'margin' : (1, 64, 64), 
+        'mask_prediction' : mask_prediction, 
+        'centre_prediction' : centre_prediciton, 
+        'affinities_extent' : affinities_extent, 
+        'loss_function' : loss_function, 
+        'output_dir' : output_dir, 
+        'learning_rate' : learning_rate, 
+        'epochs' : epochs, 
+        'validation_prop' : validation_prop, 
+        'n_each' : n_each, 
+        'labels_path' : save_path
+    }
+    labels_layer.metadata.update()
 
 
 def construct_channels_list(
@@ -107,48 +130,73 @@ def construct_conditions_list(
     return [condition_dict, ]
 
 
-# ---------------
-# Load train data
-# ---------------
+# -------------------------
+# Load Image or Labels Data
+# -------------------------
 
 @magic_factory(
-    images_path={'widget_type': 'FileEdit'}, 
-    labels_path={'widget_type': 'FileEdit'}, 
+    data_path={'widget_type': 'FileEdit'}, 
+    data_type={'choices': ['individual frames', 'image stacks']},
+    layer_name={'widget_type' : 'LineEdit'},
+    layer_type={'choices': ['Image', 'Labels']},
     scale={'widget_type' : 'LiteralEvalLineEdit'}, 
-    type={'widget_type' : 'LineEdit'}
 )
-def load_train_data(
+def load_data(
     napari_viewer: napari.viewer.Viewer, 
-    images_path: str, 
-    labels_path: str,
-    scale: tuple,
-    type: str = 'Training'
+    data_path: str, 
+    # name_pattern: str, 
+    data_type: str,
+    layer_name:str,
+    layer_type: str,
+    scale: tuple =(1, 1, 1),
+    translate: tuple =(0, 0, 0),
     ):
-    if not os.path.isdir(images_path):
-        images_paths = [images_path, ]
+
+    _load_data(napari_viewer, data_path, data_type, 
+                layer_name, layer_type, scale, translate)
+
+
+def _load_data(
+    napari_viewer: napari.viewer.Viewer, 
+    data_path: str, 
+    # name_pattern: str, 
+    data_type: str,
+    layer_name:str,
+    layer_type: str,
+    scale: tuple =(1, 1, 1),
+    translate: tuple =(0, 0, 0),
+    ):
+
+    if not os.path.isdir(data_path) or data_path.endswith('.zarr'):
+        data_paths = [data_path, ]
     else:
-        images_paths = [os.path.join(images_path, f) for f in os.listdir(images_path)]
-    if not os.path.isdir(labels_path):
-        labels_paths = [labels_path, ]
-    else:
-        labels_paths = [os.path.join(labels_path, f) for f in os.listdir(labels_path)]
-    # check that there are the same number of files in each path
-    assert len(images_paths) == len(labels_paths)
-    # go though every image and read in
-    img0 = read_with_correct_modality(images_paths[0]) # probs need to use tensorstore
-    im_shape = img0.shape
-    del img0
-    lab0 = read_with_correct_modality(labels_paths[0])
-    lb_shape = lab0.shape
-    del lab0
-    assert im_shape == lb_shape
-    assert len(im_shape) == 3
-    image_stack = generate_4D_stack(images_paths, im_shape)
-    labels_stack = generate_4D_stack(labels_paths, lb_shape)
-    napari_viewer.add_image(image_stack, scale=scale, name=f'{type} Images')
-    napari_viewer.layers['Training Images'].metadata.update({'images_paths' : images_paths, 'labels_paths' : labels_paths})
-    napari_viewer.add_labels(labels_stack, scale=scale, name=f'{type} Ground Truth')
-    napari_viewer.layers['Training Ground Truth'].metadata.update({'images_paths' : images_paths, 'labels_paths' : labels_paths})
+        data_paths = [os.path.join(data_path, f) for f in os.listdir(data_path)]
+    imgs = []
+    data_paths = sorted(data_paths)
+    for p in data_paths:
+        im = read_with_correct_modality(p)
+        imgs.append(im)
+    # if data is in stack/s (4D stacks of 3D frames)
+    if data_type == 'image stacks' and len(imgs) > 1:
+        imgs = np.concatenate(imgs)
+    # if data is in individual 3D frames
+    if data_type == 'individual frames':
+        imgs = np.stack(imgs)
+    if layer_type == 'Image':
+        napari_viewer.add_image(imgs, scale=(1, ) + scale, name=layer_name, translate=(0,) + translate)
+    if layer_type == 'Labels':
+        napari_viewer.add_labels(imgs, scale= (1, ) + scale, name=layer_name, translate=(0,) + translate)
+
+
+def generate_4D_stack(path_list, shape):
+    images = []
+    for p in path_list:
+        im  = read_with_correct_modality(p)
+        assert shape == im.shape
+        images.append(im)
+    images = np.stack(images)
+    assert len(images.shape) == 4
+    return images
 
 
 def generate_4D_stack(path_list, shape):
@@ -166,35 +214,8 @@ def read_with_correct_modality(path):
     if path.endswith('.tif') or path.endswith('.tiff'):
         im = imread(path)
     elif path.endswith('.zar') or path.endswith('.zarr'):
-        im = zarr.open(path)
+        im = zarr.creation.open_array(path, 'r')
     return im
-
-
-
-# -------------
-# Load New Data
-# -------------
-
-# use mode='d' for directories, see:
-# https://napari.org/magicgui/usage/_autosummary/magicgui.widgets.FileEdit.html
-@magic_factory( image_path={'mode': 'd'}, labels_dir={'mode': 'd'})
-def initiate_training_data(image_path: pathlib.Path, labels_dir: pathlib.Path):
-    # load a single image into 4D array and initiate a labels layer (in file as tesnorstore)
-    pass
-
-
-@magic_factory(
-    images_path={'widget_type': 'FileEdit'}, 
-    max_number={'widget_type' : 'LiteralEvalLineEdit'}
-)
-def add_image_data(images_path, max_number=None):
-    pass
-
-
-
-# -------------------
-# Segment with Model
-# -------------------
 
 
 
@@ -212,133 +233,135 @@ def self_destructing_callback(callback, disconnect):
     return run_once_callback
 
 
+# magicfactory, forget the container below
 def predict_output_chunks_widget(
         napari_viewer,
-        input_volume_layer: napari.types.ImageData,
+        input_volume_layer: napari.layers.Image,
+        labels_layer: napari.layers.Labels, 
         chunk_size: str = '(10, 256, 256)',
         margin: str = '(1, 64, 64)',
-        unet: str = 'default', 
-        use_default_unet: bool = True,
-        state: Dict = None,
+        which_unet: str = 'default',
+        unet: str = 'to choose file select above: file', 
+        num_pred_channels: int = 5,  # can probs get this from last unet layer
+        save_path: Union[str, None] = None,
+        name: str = 'labels-prediction'
         ):
+    use_default_unet = which_unet == 'default'
+    if which_unet == 'file':
+        unet = unet
+    elif which_unet == 'labels layer':
+        unet = labels_layer.metadata['unet']
+        chunk_size = labels_layer.metadata['chunk_size']
+        margin = labels_layer.metadata['margin']
     if type(chunk_size) is str:
         chunk_size = ast.literal_eval(chunk_size)
     if type(margin) is str:
         margin = ast.literal_eval(margin)
-    if state is None:
-        state = {}
     viewer = napari_viewer
-    layer = input_volume_layer
+    data = input_volume_layer.data
     scale = viewer.layers[0].scale[1:] # lazy assumption that all layers have the same scale 
     translate = viewer.layers[0].translate[1:] # and same translate 
-    state['scale'] = scale
-    state['translate'] = translate
-    if isinstance(layer, da.Array):
-        zarr_layer = zarr.zeros(layer.shape)
-        for t in range(layer.shape[0]):
-            zarr_layer[t, ...] = layer[t, ...].compute()
-        layer = zarr_layer
-    print(type(layer), layer.shape)
+    #print(type(data), data.shape)
     ndim = len(chunk_size)
-    # for loop starts here (for all time points:)
-    for t in range(input_volume_layer.shape[0]):
+    # For now: use in-memory zarr array. When working, we can open on-disk
+    # array with tensorstore so that we can paint into it even as the network
+    # is writing to other timepoints. (exploding head emoji)
+    output_labels = zarr.zeros(
+        data.shape, 
+        chunks=(1,) + data.shape[1:], 
+        dtype=np.int32, 
+        )
+    # in the future, we can add neural net output as an in-memory zarr array
+    # that only displays the currently predicted output timepoint, and zeroes
+    # out the rest. This is because the output volumes are otherwise
+    # extremely large.
+    output_volume = np.zeros((num_pred_channels,) + data.shape[1:], dtype=np.float32) 
+    # Best would be to use napari.util.progress to have nested progress bars
+    # here (one for timepoints, one for chunks, maybe one for watershed)
+    output_layer = viewer.add_labels(
+            output_labels,
+            name=name,
+            scale=scale,
+            translate=translate,
+            )
+
+    def handle_yields(yielded_val):
+        print(f"Completed timepoint {yielded_val}")
+
+    #chunks = make_chunks(data[0, ...].shape, chunk_size, margin)
+    #n_chunks = len(chunks[0])
+
+    launch_worker = thread_worker(
+        predict_segment_loop,
+        progress={'total': data.shape[0], 'desc': 'thread-progress'},
+        # this does not preclude us from connecting other functions to any of the
+        # worker signals (including `yielded`)
+        connect={'yielded': handle_yields},
+    )
+
+    worker = launch_worker(
+        data, 
+        viewer, 
+        output_volume, 
+        unet, 
+        chunk_size, 
+        margin, 
+        use_default_unet,
+        ndim, 
+        output_labels
+    )
+    if save_path is not None:
+        zarr.save(save_path, output_labels)
+
+    return output_layer
+
+
+def predict_segment_loop(
+        data, 
+        viewer, 
+        output_volume, 
+        unet, 
+        chunk_size, 
+        margin, 
+        use_default_unet,
+        ndim, 
+        output_labels
+    ):
+    for t in range(data.shape[0]):
+        #print(t)
         viewer.dims.current_step = (t, 0, 0, 0)
         slicing = (t, slice(None), slice(None), slice(None))
-        state['slicing'] = slicing
-        input_volume = np.asarray(layer[slicing]).astype(np.float32)
+        input_volume = np.asarray(data[slicing]).astype(np.float32)
         input_volume /= np.max(input_volume)
-        if 'unet-output' in state:  # not our first rodeo
-            state['unet-worker'].quit()  # in case we are running on another slice
-            output_volume = state['unet-output']
-            output_volume[:] = 0
-            #
-            # layerlist = state['unet-output-layers']
-            
-        else:
-            # TODO: find the training experiment prep code and hardcode so 
-            #       that the first five output channels are used for segmentation
-            #       --> will discard any auxillary training channels subsequent to prediction
-                        # TODO: change the prediction code to discard channels after the 
-                        #       first five
-            output_volume = np.zeros((5,) + input_volume.shape, dtype=np.float32) 
-            state['unet-output'] = output_volume
-
-        def clear_volume(event=None):
-            output_volume[:] = 0
-            # we won't be using napari layers to show unet predictions
-            #for ly in layerlist:
-                #ly.refresh()
-        # 
-        # for each timepoint:
-        # - launch prediciton worker
-        # - launch watershed worker
-
-        # define the WATERSHED WORKER
-        launch_watershed_worker = thread_worker(
-            ws.segment_output_image, 
-            start_thread=False
-        )
-        output = np.pad(
+        current_output = np.pad(
             np.zeros(output_volume.shape[1:], dtype=np.uint32),
             1,
             mode='constant',
             constant_values=0,
             )
         crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-        output_layer = state.get('output-layer')
-        if output_layer is None or output_layer not in napari_viewer.layers:
-            output_layer = viewer.add_labels(
-                    output[crop],
-                    name='watershed',
-                    scale=state['scale'],
-                    translate=state['translate'],
-                    )
-            state['output-layer'] = output_layer
-        else:
-            output_layer.data = output[crop]
-        watershed_worker = launch_watershed_worker(
-            output,
+        # predict using unet
+        predict_output_chunks(
+            unet, 
+            input_volume, 
+            chunk_size, 
+            output_volume, 
+            margin=margin, 
+            use_default_unet=use_default_unet
+            )
+        ws.segment_output_image(
+            output_volume, #[slicing],
             affinities_channels=(0, 1, 2),
             thresholding_channel=3,
             centroids_channel=4,
-            out=output.ravel(),
-        )
-
-        # define the PREDICTION WORKER
-        launch_prediction_worker = thread_worker(
-                predict_output_chunks,
-                connect={
-                        #'yielded': [ly.refresh for ly in layerlist],
-                        #'returned': return_callbacks,
-                        'returned': watershed_worker.start,
-                        'aborted': clear_volume,
-                        }
-                )
-        # start PREDICTION WORKER, which *should* start the WATERSHED WORKER once returned
-        worker = launch_prediction_worker(
-                unet, input_volume, chunk_size, output_volume, margin=margin, use_default_unet=use_default_unet
-                )
-        state['unet-worker'] = worker
-        current_step = viewer.dims.current_step
-        currstep_event = viewer.dims.events.current_step
+            out=current_output.ravel())
+        output_labels[t, ...] = current_output[crop]
+        output_volume[:] = 0
+        yield t
 
 
-        # Callback madness ??? 
-        @self_destructing_callback(disconnect=currstep_event.disconnect)
-        def quit_worker(event):
-            new_step = event.value
-            if new_step[:-ndim] != current_step[:-ndim]:  # new slice
-                worker.quit()
-
-        currstep_event.connect(quit_worker)
-        clear_once = self_destructing_callback(
-                clear_volume, currstep_event.disconnect
-                )
-        currstep_event.connect(clear_once)
-
-        # - save watershed to open zarr file??
-
-
+# ------------------------------------------------
+# What was copy_data for... might need to ask Juan
 @magic_factory
 def copy_data(
         napari_viewer: napari.viewer.Viewer,
@@ -353,101 +376,132 @@ def copy_data(
     slice_ = napari_viewer.dims.current_step
     slicing = slice_[:ndim_dst - ndim_src]
     dst_data[slicing] = src_data
-
-
-def segment_from_prediction_widget(
-        napari_viewer: napari.viewer.Viewer,
-        prediction: np.ndarray,
-        state: Optional[Dict] = None,
-        ):
-    viewer = napari_viewer
-    output = np.pad(
-            np.zeros(prediction.shape[1:], dtype=np.uint32),
-            1,
-            mode='constant',
-            constant_values=0,
-            )
-    ndim = output.ndim
-    crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-    output_layer = state.get('output-layer')
-    if output_layer is None or output_layer not in napari_viewer.layers:
-        output_layer = viewer.add_labels(
-                output[crop],
-                name='watershed',
-                scale=state['scale'],
-                translate=state['translate'],
-                )
-        state['output-layer'] = output_layer
-    else:
-        output_layer.data = output[crop]
-
-    def clear_output(event=None):
-        output[:] = 0
-        output_layer.refresh()
-
-    launch_segmentation = thread_worker(
-            ws.segment_output_image,
-            connect={'finished': output_layer.refresh},
-            )
-    worker = launch_segmentation(
-            prediction,
-            affinities_channels=(0, 1, 2),
-            thresholding_channel=3,
-            centroids_channel=4,
-            out=output.ravel(),
-            )
-    current_step = viewer.dims.current_step
-    currstep_event = viewer.dims.events.current_step
-
-    @self_destructing_callback(disconnect=currstep_event.disconnect)
-    def quit_worker_and_clear(event):
-        new_step = event.value
-        if new_step[:-ndim] != current_step[:-ndim]:  # new slice
-            worker.quit()
-
-    currstep_event.connect(quit_worker_and_clear)
-    clear_once = self_destructing_callback(
-            clear_output, currstep_event.disconnect
-            )
-    currstep_event.connect(clear_once)
+# ------------------------------------------------
 
 
 class UNetPredictWidget(widgets.Container):
     def __init__(self, napari_viewer):
-        self._state = {'self': self}
         super().__init__(labels=False)
         self.predict_widget = widgets.FunctionGui(
                 predict_output_chunks_widget,
                 param_options=dict(
                         napari_viewer={'visible': False},
                         chunk_size={'widget_type': 'LiteralEvalLineEdit'},
-                        state={'visible': False},
                         unet={'widget_type': 'FileEdit'}, 
-                        use_default_unet={'widget_type': 'CheckBox'} 
+                        which_unet={'choices': ['default', 'file', 'labels layer']}
                         )
                 )
         self.append(widgets.Label(value='U-net prediction'))
         self.append(self.predict_widget)
-        self.predict_widget.state.bind(self._state)
         self.predict_widget.napari_viewer.bind(napari_viewer)
         self.viewer = napari_viewer
         self.call_watershed = None
 
-    def add_watershed_widgets(self, volume):
-        if self.call_watershed is None:
-            self.call_watershed = widgets.FunctionGui(
-                    segment_from_prediction_widget,
-                    call_button='Run Watershed',
-                    param_options=dict(
-                            prediction={'visible': False},
-                            state={'visible': False},
-                            )
-                    )
-            self.append(widgets.Label(value='Affinity watershed'))
-            self.append(self.call_watershed)
-        self.call_watershed.prediction.bind(volume)
-        self.call_watershed.state.bind(self._state)
-        self.call_watershed.enabled = True
+
+# -----------------------
+# Ground Truth Generation
+# -----------------------
+
+@magic_factory()
+def generate_ground_truth(
+    napari_veiwer: napari.Viewer,
+    labels_to_correct: napari.layers.Labels, 
+    new_layer_name: str = 'Ground truth', 
+    save_path: str= './ground_truth.zarr'
+):  
+    chunks = (1, ) + tuple(labels_to_correct.data.shape[1:])
+    labels = zarr.zeros_like(labels_to_correct.data, chunks=chunks)
+    labels[:] = labels_to_correct.data
+    zarr.save(save_path, labels)
+    spec = {
+         'driver': 'zarr',
+         'kvstore': {
+             'driver': 'file',
+             'path': save_path,
+         },
+         'metadata' : {
+             'dataType': str(labels.dtype),
+             'dimensions': list(labels.shape),
+             'blockSize': list(chunks),
+         },
+         'create': False,
+         'delete_existing': False,
+     }
+    labels = ts.open(spec)
+    napari_veiwer.add_labels(
+        labels, 
+        name=new_layer_name, 
+        scale=labels_to_correct.scale, 
+        translate=labels_to_correct.translate)
+
+
+# --------------
+# Combine Layers
+# --------------
+
+@magic_factory()
+def combine_layers(
+    napari_viewer: napari.Viewer, 
+    base_layer: napari.layers.Layer, 
+    to_append: napari.layers.Layer, 
+    save_dir: Union[str, None] = None, 
+    save_prefix: str = '', 
+    save_all: bool = True, # save all or just new
+    save_indivdually: bool =  False, 
+    number_from: int = 0
+):
+    '''
+    Combine a stack of labels volumes with a second stack. 
+
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+    base_layer: napari.layers.Layer
+        Layer to which the second layer will be added.
+    to_append: napari.layers.Labels
+        Layer to append to the base layer.
+    save_dir: str or None
+        If not none, the output will be saved to this 
+        directory.
+    save_prefix: str
+        If save_dir is not None, this is the name that will 
+        be used in saving the images.
+    save_all: bool
+        If save_dir is not None, should all of the images in 
+        the stack be saved? If False, only the appended images
+        will be saved
+    save_individually: bool
+        Should images be saved as a series of volumes or a single 
+        4D stack?
+    number_from: int
+        if save_individually, images will be saved each with a unique 
+        number, starting with this one (e.g., range starting from 0)
+    '''
+    base_layer.data = np.concatenate([base_layer.data, to_append.data])
+    # what to do about metadata
+    # should probably assert that the layer properties match
+
+    # saving stuff... yay
+    if save_dir is not None:
+        if not save_all:
+            if not save_indivdually:
+                save_path = os.path.join(save_dir, save_prefix + '.zarr')
+                zarr.save(save_path, to_append.data)
+            else:
+                for t in range(to_append.data.shape[0]):
+                    save_path = os.path.join(save_dir, 
+                                        save_prefix + f'_{t + number_from}.zarr')
+                    zarr.save(save_path, to_append.data[t, ...])
+        else:
+            if not save_indivdually:
+                save_path = os.path.join(save_dir, save_prefix + '.zarr')
+                zarr.save(save_path, base_layer.data)
+            else:
+                for t in range(base_layer.data.shape[0]):
+                    save_path = os.path.join(save_dir, 
+                                        save_prefix + f'_{t + number_from}.zarr')
+                    zarr.save(save_path, base_layer.data[t, ...])
+
 
 
 # -----------------------
@@ -459,28 +513,103 @@ class UNetPredictWidget(widgets.Container):
 )
 def assess_segmentation(
     napari_viewer: napari.Viewer,
-    ground_truth: napari.types.LabelsData, 
-    model_segmentation: napari.types.LabelsData, 
-    variation_of_information: bool, 
-    average_precision: bool, 
-    object_count: bool, 
-    diagnostics: bool,
-    save_dir: str, 
-    save_prefix: str,
+    ground_truth: napari.layers.Labels, 
+    model_segmentation: napari.layers.Labels, 
+    chunk_size: tuple = (10, 256, 256), 
+    margin: tuple = (1, 64, 64),
+    variation_of_information: bool = True, 
+    average_precision: bool = True, 
+    object_count: bool = True, 
+    #diagnostics: bool,
+    save_dir: str = './', 
+    save_prefix: str = 'segmentation-metrics',
+    show: bool = True, 
+    exclude_chunks_less_than: int = 10,
     ):
     # save info
     os.makedirs(save_dir, exist_ok=True)
     data_path = os.path.join(save_dir, save_prefix + '_metrics.csv')
     # need to get the slices from the model-produced layer
-    ms_layer = find_matching_labels(napari_viewer, model_segmentation)
-    slices = ms_layer.metadata.get('slices')
-    df = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
-                              variation_of_information, average_precision, 
-                              object_count, data_path)
+    meta = model_segmentation.metadata
+    chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
+    shape = model_segmentation.data.shape
+    slices = get_slices_from_chunks(shape, chunk_size, margin)
+    data, stats = model_assessment(
+        ground_truth, 
+        model_segmentation, 
+        save_prefix,
+        chunk_size, 
+        margin, 
+        save_dir,
+        variation_of_information, 
+        average_precision, 
+        object_count, 
+        exclude_chunks_less_than)
     # generate plots
-    # plot_metrics(...)
-    # plot_diagnostics(...)
+    plot_accuracy_metrics(data, save_prefix, save_dir, show)
 
+    # Diagnostic plots
+    # plot_diagnostics(...)
+    #TODO:
+    # - get image metrics relating to quality/information/randomness/edges
+    # - get object metrics for segmentation 
+
+
+def model_assessment(
+    ground_truth: napari.layers.Labels, 
+    model_segmentation: napari.layers.Labels, 
+    save_prefix: str,
+    chunk_size: tuple, 
+    margin: tuple, 
+    save_dir: str,
+    variation_of_information: bool, 
+    average_precision: bool, 
+    object_count: bool, 
+    exclude_chunks_less_than: int 
+    ):
+    # save info
+    os.makedirs(save_dir, exist_ok=True)
+    n = model_segmentation.name
+    data_path = os.path.join(save_dir, save_prefix + f'_{n}_metrics.csv')
+    # need to get the slices from the model-produced layer
+    meta = model_segmentation.metadata
+    chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
+    shape = model_segmentation.data.shape
+    slices = get_slices_from_chunks(shape, chunk_size, margin)
+    data, stats = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
+                                variation_of_information, average_precision, 
+                                object_count, data_path, exclude_chunks_less_than)
+    return data, stats
+
+
+def chunk_n_margin(meta, chunk_size, margin):
+    mcs = meta.get('chunk_size')
+    if mcs is not None:
+        chunk_size = mcs
+    mmg = meta.get('margin')
+    if mmg is not None:
+        margin = mmg
+    return chunk_size, margin
+
+
+def get_slices_from_chunks(arr_shape, chunk_size, margin):
+    if len(arr_shape) <= 3:
+        ts = range(1)
+        fshape = arr_shape
+    else:
+        ts = range(arr_shape[0])
+        fshape = arr_shape[1:]
+    chunk_starts, chunk_crops = make_chunks(fshape, chunk_size, margin)
+    slices = []
+    for t in ts:
+        for start, crop in list(zip(chunk_starts, chunk_crops)):
+            sl = (slice(t, t+1), ) + tuple(
+                    slice(start0, start0 + step)
+                    for start0, step in zip(start, chunk_size)
+                    )
+            cr = tuple(slice(i, j) for i, j in crop)
+            slices.append((sl, cr)) # useage: 4d_labels[sl][cr]
+    return slices
 
 # -------------------
 # Validation Analysis
@@ -488,18 +617,53 @@ def assess_segmentation(
 
 @magic_factory()
 def validation_analysis(
-    images: napari.types.ImageData,
-    model_1: napari.types.LabelsData,
-    model_2: napari.types.LabelsData,
-    model_3: napari.types.LabelsData,
-    model_4: napari.types.LabelsData, 
+    ground_truth: napari.layers.Labels,
+    model_1: Union[None, napari.layers.Labels],
+    model_2: Union[None, napari.layers.Labels],
+    model_3: Union[None, napari.layers.Labels],
+    model_4: Union[None, napari.layers.Labels],
+    chunk_size: tuple = (10, 256, 256), 
+    margin: tuple = (1, 64, 64),
+    variation_of_information: bool = True, 
+    average_precision: bool = True, 
+    object_count: bool = True, 
+    #diagnostics: bool,
+    save_dir: str = './', 
+    save_prefix: str = 'segmentation-metrics',
+    show: bool = True, 
+    exclude_chunks_less_than: int = 10, 
     ):
-    # want to compute quality metrics etc for every chunk of data
-    # passed through the pipeline 
-    # therefore need the unet chunks info
-    # probs get input chunk info from unet state dict
-    pass
-
+    models = [model_1, model_2, model_3, model_4]
+    models = [m for m in models if m is not None]
+    data_0 = [] # data for each image chunk
+    data_1 = [] # data for average precision graph (i.e., computed from above)
+    model_stats = []
+    for model in models:
+        d, s = model_assessment(
+            ground_truth, 
+            model, 
+            save_prefix,
+            chunk_size, 
+            margin, 
+            save_dir,
+            variation_of_information, 
+            average_precision, 
+            object_count, 
+            exclude_chunks_less_than)
+        data_0.append(d[0])
+        data_1.append(d[1])
+        model_stats.append(s)
+    # plot
+    ...
+    # statistics
+    ...
+    # concatenate dfs xxxx
+    data_0 = pd.concat(data_0)
+    data_1 = pd.concat(data_1)
+    model_stats = pd.concat(model_stats)
+    # save results
+    ...
+#print()
 
 # ----------------
 # Helper Functions
@@ -528,7 +692,7 @@ def find_matching_labels(
 # -------------------
 
 
-@napari_hook_implementation
-def napari_experimental_provide_dock_widget():
+#@napari_hook_implementation
+#def napari_experimental_provide_dock_widget():
     # you can return either a single widget, or a sequence of widgets
-    return [UNetPredictWidget, copy_data, train_from_viewer, load_train_data]
+    #return [UNetPredictWidget, copy_data, train_from_viewer, load_train_data]

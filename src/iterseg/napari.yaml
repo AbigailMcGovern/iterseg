@@ -1,0 +1,35 @@
+name: iterseg
+schema_version: 0.1.0
+contributions:
+  commands:
+  - id: iterseg.UNetPredictWidget
+    title: Create U Net Predict Widget
+    python_name: iterseg._dock_widgets:UNetPredictWidget
+  - id: iterseg.train_from_viewer
+    title: Create train_from_viewer
+    python_name: iterseg._dock_widgets:train_from_viewer
+  - id: iterseg.load_data
+    title: Create load_data
+    python_name: iterseg._dock_widgets:load_data
+  - id: iterseg.generate_ground_truth
+    title: Create generate_ground_truth
+    python_name: iterseg._dock_widgets:generate_ground_truth
+  - id: iterseg.combine_layers
+    title: Create combine_layers
+    python_name: iterseg._dock_widgets:combine_layers
+  - id: iterseg.assess_segmentation
+    title: Create assess_segmentation
+    python_name: iterseg._dock_widgets:assess_segmentation
+  widgets:
+  - command: iterseg.UNetPredictWidget
+    display_name: U Net Predict Widget
+  - command: iterseg.train_from_viewer
+    display_name: train_from_viewer
+  - command: iterseg.load_data
+    display_name: load_data
+  - command: iterseg.generate_ground_truth
+    display_name: generate_ground_truth
+  - command: iterseg.combine_layers
+    display_name: combine_layers
+  - command: iterseg.assess_segmentation
+    display_name: assess_segmentation

@@ -1,17 +1,20 @@
+from tkinter import Y
+from matplotlib.colors import same_color
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import os
-from os import path
+from pathlib import Path
 import re
-from .plots import experiment_VI_plots, VI_plot, plot_experiment_APs, plot_experiment_no_diff
+from .plots import VI_plot, plot_AP, plot_count_difference, experiment_VI_plots
 
 import pandas as pd
 from skimage.measure import regionprops
 from skimage.metrics import variation_of_information
 import umetrics
 
-from napari.types import LabelsData
+import napari
+from scipy import stats
 
 # compare model result with ground truth validation data (not seen by network)
 
@@ -42,12 +45,13 @@ from napari.types import LabelsData
 
 def get_accuracy_metrics(
     slices, 
-    gt_data: LabelsData,
-    model_result: LabelsData,
+    gt_data: napari.layers.Labels,
+    model_result:  napari.layers.Labels,
     VI: bool = True, 
     AP: bool = True, 
     ND: bool = True,
     out_path = None,
+    exclude_chunks: int = 10, 
     ):
     '''
     Parameters:
@@ -65,29 +69,68 @@ def get_accuracy_metrics(
     ND: bool
         SHould we find the number of objects difference from 
     '''
-    scores = {'VI: GT | Output' : [], 'VI: Output | GT' : [], 'Number difference' : []}
+    scores = {'VI: GT | Output' : [], 'VI: Output | GT' : [], 'Count difference' : []}
     IoU_dict = generate_IoU_dict()
     scores.update(IoU_dict)
-    for s_ in slices:
-        gt = gt_data[s_]
-        mr = model_result[s_]
-        if VI:
-            vi = variation_of_information(gt, mr)
-            scores['GT | Output'].append(vi[0])
-            scores['Output | GT'].append(vi[1])
-        if AP:
-            generate_IoU_data(gt, mr, scores)
-        if ND:
-            n_gt = np.unique(gt).size
-            n_mr = np.unique(mr).size
-            nd = n_gt - n_mr
-            scores['Number difference'].append(nd)
-    to_keep = [key for key in scores.keys() if len(scores[key]) == len(slices)]
+    for s_, c_ in slices:
+        gt = gt_data.data[s_]
+        gt = np.squeeze(gt)[c_]
+        n_objects = np.unique(gt).size
+        if n_objects > exclude_chunks + 1:
+            mr = model_result.data[s_]
+            mr = np.squeeze(mr)[c_]
+            #print('n_objects', n_objects)
+            if VI:
+                vi = variation_of_information(gt, mr)
+                scores['VI: GT | Output'].append(vi[0])
+                scores['VI: Output | GT'].append(vi[1])
+            if AP:
+                generate_IoU_data(gt, mr, scores)
+            if ND:
+                n_mr = np.unique(mr).size
+                #print('n_mr', n_mr, np.unique(mr), mr.shape, mr.dtype)
+                nd = n_mr - n_objects
+                nd = nd / n_objects # as a proportion might be more informative
+                scores['Count difference'].append(nd)
+    lens = {key : len(scores[key]) for key in scores.keys()}
+    to_keep = [key for key in scores.keys() if lens[key] > 1]
     new_scores = {key : scores[key] for key in to_keep}
     new_scores = pd.DataFrame(new_scores)
+    statistics = single_sample_stats(new_scores, to_keep, model_result.name)
+    new_scores['model_name'] = [model_result.name, ] * len(new_scores)
     if out_path is not None:
         new_scores.to_csv(out_path)
-    return new_scores
+        p = Path(out_path)
+        stat_path = os.path.join(p.parents[0], p.stem + '_stats.csv')
+        statistics.to_csv(stat_path)
+    ap_scores = None
+    if AP:
+        if out_path is not None:
+            save_dir = Path(out_path).parents[0]
+            name = Path(out_path).stem
+            suffix = 'AP-scores'
+        ap_scores = generate_ap_scores(new_scores, name, save_dir, suffix)
+        ap_scores['model_name'] = [model_result.name, ] * len(ap_scores)
+    return (new_scores, ap_scores), statistics
+
+
+def single_sample_stats(df, columns, name):
+    results = {}
+    alpha = 0.95
+    for c in columns:
+        sample_mean = np.mean(df[c].values)
+        sample_sem = stats.sem(df[c].values)
+        degrees_freedom = df[c].values.size - 1
+        CI = stats.t.interval(alpha, degrees_freedom, sample_mean, sample_sem)
+        n = str(c) + '_'
+        results[n + 'mean'] = sample_mean
+        results[n + 'sem'] = sample_sem
+        results[n + '95pcntCI_2-5pcnt'] = CI[0]
+        results[n + '95pcntCI_97-5pcnt'] = CI[1]
+    results = pd.DataFrame(results)
+    results['model_name'] = [name, ] * len(df)
+    return results
+
 
 
 def metrics_for_stack(directory, name, seg, gt):
@@ -179,7 +222,8 @@ def generate_ap_scores(df, name, directory, suffix, thresholds=(0.3, 0.35, 0.4, 
         ap = true_positives / (true_positives + false_negatives + false_positives)
         ap_scores['average_precision'].append(ap)
     print(ap_scores)
-    ap_scores = save_data(ap_scores, name, directory, suffix)
+    if directory is not None:
+        ap_scores = save_data(ap_scores, name, directory, suffix)
     return ap_scores
 
 
@@ -188,126 +232,67 @@ def generate_ap_scores(df, name, directory, suffix, thresholds=(0.3, 0.35, 0.4, 
 # Plotting Methods
 # ----------------
 def plot_accuracy_metrics(
-    df: pd.DataFrame,
+    data: tuple,
     prefix: str,
     save_dir: str,
-    vi: bool, 
-    ap: bool, 
-    nd: bool,
+    show: bool=True
     ):
-    pass
+    '''
+    Parameters
+    ----------
+    data: tuple of pd.DataFrame
+        df0 w/ VI/IoU/nd data, df1 w/ AP data
+    prefix: str
+        name under which to 
+    save_dir: str
+        directory into which to save plots
+    show: bool
+        show the plots?
+    '''
+    df0 = data[0]
+    df1 = data[1]
+    cols0 = df0.columns.values
+    if 'VI: GT | Output' in cols0:
+        save_path = os.path.join(save_dir, prefix + '_VI-plot.png')
+        VI_plot(
+                df0, 
+                cond_ent_over='VI: GT | Output', 
+                cond_ent_under='VI: Output | GT', 
+                save=save_path, show=show)
+    if df1 is not None:
+        save_path = os.path.join(save_dir, prefix + '_AP-plot.png')
+        df1 = [df1, ]
+        plot_AP(df1, [prefix, ], save_path, 'Average precision', show=show)
+    if 'Count difference' in cols0:
+        #save_path = os.path.join(save_dir, prefix + '_count-plot.png')
+        plot_count_difference(df0, 'Object count difference', save_dir, show=show)
 
 
 
-
+def plot_model_comparison(
+    data_0: list, 
+    data_1: list, 
+    names: list,
+    prefix: str, 
+    save_dir: str, 
+    AP: bool, 
+    VI: bool, 
+    ND: bool,
+    show: bool = True,
+    ):
+    if AP:
+        plot_AP(data_1, names, save_dir, 'Comparison of model average precsision', show=show)
+    if VI: # 
+        experiment_VI_plots(data_0, names, 'Comparison of Model VI subscores', prefix, save_dir, 
+        cond_ent_over='VI: GT | Output', cont_ent_under='VI: GT | Output', show=show)
+    if ND:
+        pass
 
 
 
 # ---------
 # OLD STUFF
 # ---------
-
-def segmentation_VI_plots(data_dir, seg_info, exp_name, out_name):
-    vi_train_paths, vi_train_names = _get_VI_paths(data_dir, 
-                                                   seg_info, 
-                                                   validation=False)
-    vi_val_paths, vi_val_names = _get_VI_paths(data_dir, 
-                                               seg_info, 
-                                               validation=True)
-    for p in vi_train_paths:
-        VI_plot(p, lab='_train')
-    for p in vi_val_paths:
-        VI_plot(p, lab='_val')
-    out_dir = os.path.join(data_dir, out_name + '_VI_plots')
-    experiment_VI_plots(vi_train_paths, 
-                        vi_train_names, 
-                        f'Training output VI Scores: {exp_name}', 
-                        out_name + '_train', 
-                        out_dir)
-    experiment_VI_plots(vi_val_paths, 
-                        vi_val_names, 
-                        f'Test output VI Scores: {exp_name}', 
-                        out_name + '_val', 
-                        out_dir)
-
-
-def segmentation_plots(data_dir, seg_info, exp_name, out_name):
-    vi_paths, vi_names = _get_VI_paths(data_dir, 
-                                               seg_info, 
-                                               validation=True)
-    ap_paths, ap_names = _get_AP_paths(data_dir, seg_info)
-    nd_paths, nd_names = _get_IoU_paths(data_dir, seg_info)
-    out_dir = os.path.join(data_dir, out_name)
-    experiment_VI_plots(vi_paths, 
-                        vi_names, 
-                        f'Test output VI Scores: {exp_name}', 
-                        out_name + '_val_VI', 
-                        out_dir)
-    plot_experiment_APs(ap_paths, 
-                        ap_names, 
-                        f'Average precision: {exp_name}', 
-                        out_dir, 
-                        out_name + '_val_AP')
-    plot_experiment_no_diff(nd_paths, 
-                            nd_names, 
-                            f'Number difference: {exp_name}', 
-                            out_dir, 
-                            out_name + '_val_num-diff')
-
-
-
-def get_experiment_seg_info(
-        data_dir, 
-        experiments, 
-        w_scale=None, 
-        compactness=0.,
-        display=True,
-        centroid_opt=('centreness-log', 'centreness', 'centroid-gauss'), 
-        thresh_opt=('mask', 'centreness', 'centreness-log'),
-        z_aff_opt=('z-1', 'z-1-smooth'),
-        y_aff_opt=('y-1', 'y-1-smooth'), 
-        x_aff_opt=('x-1', 'x-1-smooth'), 
-        date='recent'
-    ):
-    seg_info = {}
-    for key in experiments.keys():
-        n = experiments[key]['name']
-        regex = re.compile( r'\d{6}_\d{6}_' + n)
-        files = os.listdir(data_dir)
-        matches = []
-        for f in files:
-            mo = regex.search(f)
-            if mo is not None:
-                matches.append(mo[0])
-        if date == 'recent':
-            seg_dir = sorted(matches)[-1]
-        else: # specific date range ??
-            pass
-        exp_dir = os.path.join(data_dir, seg_dir)
-        if os.path.exists(exp_dir):
-            seg_info[key] = {}
-            # find the prefered channels for segmenting
-            chans = experiments[key]['channels']
-            cent_chan = _get_index(chans, centroid_opt)
-            seg_info[key]['centroids_channel'] = cent_chan
-            thresh_chan = _get_index(chans, thresh_opt)
-            seg_info[key]['thresholding_channel'] = thresh_chan
-            z_chan = _get_index(chans, z_aff_opt)
-            y_chan = _get_index(chans, y_aff_opt)
-            x_chan = _get_index(chans, x_aff_opt)
-            seg_info[key]['affinities_channels'] = (z_chan, y_chan, x_chan)
-            # FIX THIS!!! Need to use name and add a date/date range option
-            # raise ValueError(f'path {exp_dir} does not exist')
-            seg_info[key]['directory'] = exp_dir
-            seg_info[key]['suffix'] = experiments[key]['name']
-            seg_info[key]['scale'] = experiments[key]['scale']
-            seg_info[key]['w_scale'] = w_scale
-            seg_info[key]['compactness'] = compactness
-            seg_info[key]['display'] = display
-        else:
-            print(f'path {exp_dir} does not exist')
-    return seg_info
-    
 
 def _get_index(chans, opts):
     idx = []
@@ -371,6 +356,23 @@ def _get_data_paths(data_dir, seg_info, s):
 def get_image_metrics():
     pass
 
+
+# --------------------------
+# Experimental image metrics
+# --------------------------
+
+def affinity_sum_graph(img, affs=(1, 2, 3, 5, 10, 20, 40)):
+    results = []
+    dims = len(img.shape)
+    for a in affs:
+        sums = []
+        for ax in range(dims):
+            diff = np.diff(img, n=a, axis=ax)
+            norm_sum = np.abs(np.sum(diff)/diff.size)
+            sums.append(norm_sum)
+        results.append(np.sum(sums))
+    return list(affs), results
+            
 
 
 # --------------
