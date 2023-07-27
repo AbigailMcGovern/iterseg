@@ -140,6 +140,7 @@ def construct_conditions_list(
     layer_name={'widget_type' : 'LineEdit'},
     layer_type={'choices': ['Image', 'Labels']},
     scale={'widget_type' : 'LiteralEvalLineEdit'}, 
+    translate={'widget_type' : 'LiteralEvalLineEdit'}, 
 )
 def load_data(
     napari_viewer: napari.viewer.Viewer, 
@@ -151,7 +152,27 @@ def load_data(
     scale: tuple =(1, 1, 1),
     translate: tuple =(0, 0, 0),
     ):
+    '''
+    Load the data into the viewer as a stack of 3D image frames. 
 
+    Parameters
+    ----------
+    data_path: str
+        Path to the image stack (if data_type is "image stacks") or to 
+        the directory with image frames (if data_type is "individual frames"). 
+        This needs to end in .tiff/.tif or .zarr/.zar. 
+    data_type: str
+        Is are data in a 4D array (e.g., 3D images are stacked together into single file)? 
+        If so use "image stack". Are the data a series of individual 3D images?
+        If so use "individual images".
+    layer_type: str
+        Is the data you want to load a segmentation (use "Labels") or an image (use "Image")
+    scale: tuple of float
+        Scale of the image/segmentation to display in z, y, x format
+    translate: tuple of float
+        Translation of the image origin in z, y, x format
+    '''
+    data_path = str(data_path)
     _load_data(napari_viewer, data_path, data_type, 
                 layer_name, layer_type, scale, translate)
 
@@ -166,11 +187,46 @@ def _load_data(
     scale: tuple =(1, 1, 1),
     translate: tuple =(0, 0, 0),
     ):
+    '''
+    Load the data into the viewer as a stack of 3D image frames. 
 
+    Parameters
+    ----------
+    data_path: str
+        Path to the image stack (if data_type is "image stacks") or to 
+        the directory with image frames (if data_type is "individual frames"). 
+        This needs to end in .tiff/.tif or .zarr/.zar. 
+    data_type: str
+        Is are data in a 4D array (e.g., 3D images are stacked together into single file)? 
+        If so use "image stack". Are the data a series of individual 3D images?
+        If so use "individual images".
+    layer_type: str
+        Is the data you want to load a segmentation (use "Labels") or an image (use "Image")
+    scale: tuple of float
+        Scale of the image/segmentation to display in z, y, x format
+    translate: tuple of float
+        Translation of the image origin in z, y, x format
+    '''
+    imgs = read_data(data_path, data_type)
+    scale = (1, ) + scale
+    translate = (0,) + translate
+    if layer_type == 'Image':
+        napari_viewer.add_image(imgs, scale=scale, name=layer_name, translate=translate)
+    if layer_type == 'Labels':
+        napari_viewer.add_labels(imgs, scale=scale, name=layer_name, translate=translate)
+
+
+
+def read_data(data_path, data_type):
+    possible_suf = ['.zarr', '.zar', '.tiff', '.tif']
     if not os.path.isdir(data_path) or data_path.endswith('.zarr'):
         data_paths = [data_path, ]
     else:
-        data_paths = [os.path.join(data_path, f) for f in os.listdir(data_path)]
+        data_paths = []
+        for f in os.listdir(data_path):
+            bool_list = [f.endswith(s) for s in possible_suf]
+            if True in bool_list:
+                data_paths.append(os.path.join(data_path, f))
     imgs = []
     data_paths = sorted(data_paths)
     for p in data_paths:
@@ -182,21 +238,7 @@ def _load_data(
     # if data is in individual 3D frames
     if data_type == 'individual frames':
         imgs = np.stack(imgs)
-    if layer_type == 'Image':
-        napari_viewer.add_image(imgs, scale=(1, ) + scale, name=layer_name, translate=(0,) + translate)
-    if layer_type == 'Labels':
-        napari_viewer.add_labels(imgs, scale= (1, ) + scale, name=layer_name, translate=(0,) + translate)
-
-
-def generate_4D_stack(path_list, shape):
-    images = []
-    for p in path_list:
-        im  = read_with_correct_modality(p)
-        assert shape == im.shape
-        images.append(im)
-    images = np.stack(images)
-    assert len(images.shape) == 4
-    return images
+    return imgs
 
 
 def generate_4D_stack(path_list, shape):
@@ -215,6 +257,7 @@ def read_with_correct_modality(path):
         im = imread(path)
     elif path.endswith('.zar') or path.endswith('.zarr'):
         im = zarr.creation.open_array(path, 'r')
+        im = np.array(im)
     return im
 
 
@@ -299,7 +342,7 @@ def predict_output_chunks_widget(
         connect={'yielded': handle_yields},
     )
 
-    worker = launch_worker(
+    worker = launch_worker( # this is where the process dies... "There appear to be 2 leaked semaphore objects to clean up at shutdown"
         data, 
         viewer, 
         output_volume, 
@@ -507,9 +550,19 @@ def combine_layers(
 # -----------------------
 # Segmentation Assessment
 # -----------------------
+#@magic_factory(
+#    data_path={'widget_type': 'FileEdit'}, 
+#    data_type={'choices': ['individual frames', 'image stacks']},
+#    layer_name={'widget_type' : 'LineEdit'},
+#    layer_type={'choices': ['Image', 'Labels']},
+#    scale={'widget_type' : 'LiteralEvalLineEdit'}, 
+#    translate={'widget_type' : 'LiteralEvalLineEdit'}, 
+#)
 
 @magic_factory(
-    save_dir={'widget_type': 'FileEdit'}
+    save_dir={'widget_type': 'FileEdit'}, 
+    chunk_size={'widget_type' : 'LiteralEvalLineEdit'}, 
+    margin={'widget_type' : 'LiteralEvalLineEdit'},    
 )
 def assess_segmentation(
     napari_viewer: napari.Viewer,
@@ -523,6 +576,33 @@ def assess_segmentation(
     #diagnostics: bool,
     save_dir: str = './', 
     save_prefix: str = 'segmentation-metrics',
+    name: str = '', 
+    show: bool = True, 
+    exclude_chunks_less_than: int = 10,
+    ):
+    _assess_segmentation(ground_truth, model_segmentation, 
+                         chunk_size, margin, variation_of_information, average_precision, 
+                         object_count, save_dir, save_prefix, name, show, exclude_chunks_less_than)
+
+    # Diagnostic plots
+    # plot_diagnostics(...)
+    #TODO:
+    # - get image metrics relating to quality/information/randomness/edges
+    # - get object metrics for segmentation 
+
+
+def _assess_segmentation(
+    ground_truth, 
+    model_segmentation, 
+    chunk_size: tuple = (10, 256, 256), 
+    margin: tuple = (1, 64, 64),
+    variation_of_information: bool = True, 
+    average_precision: bool = True, 
+    object_count: bool = True, 
+    #diagnostics: bool,
+    save_dir: str = 'choose directory', 
+    save_prefix: str = 'segmentation-metrics',
+    name: str = '',
     show: bool = True, 
     exclude_chunks_less_than: int = 10,
     ):
@@ -530,16 +610,17 @@ def assess_segmentation(
     os.makedirs(save_dir, exist_ok=True)
     data_path = os.path.join(save_dir, save_prefix + '_metrics.csv')
     # need to get the slices from the model-produced layer
-    meta = model_segmentation.metadata
-    chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
-    shape = model_segmentation.data.shape
+    if isinstance(model_segmentation, napari.layers.Labels):
+        shape = model_segmentation.data.shape
+    else:
+        shape = model_segmentation.shape
     slices = get_slices_from_chunks(shape, chunk_size, margin)
     data, stats = model_assessment(
         ground_truth, 
         model_segmentation, 
         save_prefix,
-        chunk_size, 
-        margin, 
+        name,
+        slices,
         save_dir,
         variation_of_information, 
         average_precision, 
@@ -559,8 +640,8 @@ def model_assessment(
     ground_truth: napari.layers.Labels, 
     model_segmentation: napari.layers.Labels, 
     save_prefix: str,
-    chunk_size: tuple, 
-    margin: tuple, 
+    name: str,
+    slices: list,
     save_dir: str,
     variation_of_information: bool, 
     average_precision: bool, 
@@ -569,14 +650,9 @@ def model_assessment(
     ):
     # save info
     os.makedirs(save_dir, exist_ok=True)
-    n = model_segmentation.name
-    data_path = os.path.join(save_dir, save_prefix + f'_{n}_metrics.csv')
+    data_path = os.path.join(save_dir, save_prefix + f'_{name}_metrics.csv')
     # need to get the slices from the model-produced layer
-    meta = model_segmentation.metadata
-    chunk_size, margin = chunk_n_margin(meta, chunk_size, margin)
-    shape = model_segmentation.data.shape
-    slices = get_slices_from_chunks(shape, chunk_size, margin)
-    data, stats = get_accuracy_metrics(slices, ground_truth, model_segmentation, 
+    data, stats = get_accuracy_metrics(slices, ground_truth, model_segmentation, name,
                                 variation_of_information, average_precision, 
                                 object_count, data_path, exclude_chunks_less_than)
     return data, stats

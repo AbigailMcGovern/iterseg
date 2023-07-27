@@ -47,6 +47,7 @@ def get_accuracy_metrics(
     slices, 
     gt_data: napari.layers.Labels,
     model_result:  napari.layers.Labels,
+    name: str,
     VI: bool = True, 
     AP: bool = True, 
     ND: bool = True,
@@ -72,12 +73,16 @@ def get_accuracy_metrics(
     scores = {'VI: GT | Output' : [], 'VI: Output | GT' : [], 'Count difference' : []}
     IoU_dict = generate_IoU_dict()
     scores.update(IoU_dict)
+    if isinstance(gt_data, napari.layers.Labels):
+        gt_data = gt_data.data
+    if isinstance(model_result, napari.layers.Labels):
+        model_result = model_result.data
     for s_, c_ in slices:
-        gt = gt_data.data[s_]
+        gt = gt_data[s_]
         gt = np.squeeze(gt)[c_]
         n_objects = np.unique(gt).size
         if n_objects > exclude_chunks + 1:
-            mr = model_result.data[s_]
+            mr = model_result[s_]
             mr = np.squeeze(mr)[c_]
             #print('n_objects', n_objects)
             if VI:
@@ -96,8 +101,8 @@ def get_accuracy_metrics(
     to_keep = [key for key in scores.keys() if lens[key] > 1]
     new_scores = {key : scores[key] for key in to_keep}
     new_scores = pd.DataFrame(new_scores)
-    statistics = single_sample_stats(new_scores, to_keep, model_result.name)
-    new_scores['model_name'] = [model_result.name, ] * len(new_scores)
+    statistics = single_sample_stats(new_scores, to_keep, name)
+    new_scores['model_name'] = [name, ] * len(new_scores)
     if out_path is not None:
         new_scores.to_csv(out_path)
         p = Path(out_path)
@@ -110,7 +115,7 @@ def get_accuracy_metrics(
             name = Path(out_path).stem
             suffix = 'AP-scores'
         ap_scores = generate_ap_scores(new_scores, name, save_dir, suffix)
-        ap_scores['model_name'] = [model_result.name, ] * len(ap_scores)
+        ap_scores['model_name'] = [name, ] * len(ap_scores)
     return (new_scores, ap_scores), statistics
 
 
@@ -123,14 +128,13 @@ def single_sample_stats(df, columns, name):
         degrees_freedom = df[c].values.size - 1
         CI = stats.t.interval(alpha, degrees_freedom, sample_mean, sample_sem)
         n = str(c) + '_'
-        results[n + 'mean'] = sample_mean
-        results[n + 'sem'] = sample_sem
-        results[n + '95pcntCI_2-5pcnt'] = CI[0]
-        results[n + '95pcntCI_97-5pcnt'] = CI[1]
+        results[n + 'mean'] = [sample_mean, ]
+        results[n + 'sem'] = [sample_sem, ]
+        results[n + '95pcntCI_2-5pcnt'] = [CI[0], ]
+        results[n + '95pcntCI_97-5pcnt'] = [CI[1], ]
     results = pd.DataFrame(results)
-    results['model_name'] = [name, ] * len(df)
+    results['model_name'] = name
     return results
-
 
 
 def metrics_for_stack(directory, name, seg, gt):
