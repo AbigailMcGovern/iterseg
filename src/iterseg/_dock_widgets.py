@@ -14,6 +14,9 @@ import os
 from .metrics import get_accuracy_metrics, plot_accuracy_metrics
 import tensorstore as ts
 import pandas as pd
+from .plots import comparison_plots
+from typing import Union
+
 
 # ------------
 # Train widget
@@ -27,7 +30,7 @@ import pandas as pd
     affinities_extent={'widget_type' : 'LiteralEvalLineEdit'},
     training_name={'widget_type': 'LineEdit'}, 
     loss_function={'choices': ['BCELoss', 'DiceLoss']}, 
-    output_dir={'widget_type': 'FileEdit'}, 
+    output_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
     scale={'widget_type' : 'LiteralEvalLineEdit'},
     )
 def train_from_viewer(
@@ -135,7 +138,7 @@ def construct_conditions_list(
 # -------------------------
 
 @magic_factory(
-    data_path={'widget_type': 'FileEdit'}, 
+    data_path={'widget_type': 'FileEdit', 'mode' : 'd'}, 
     data_type={'choices': ['individual frames', 'image stacks']},
     layer_name={'widget_type' : 'LineEdit'},
     layer_type={'choices': ['Image', 'Labels']},
@@ -560,7 +563,7 @@ def combine_layers(
 #)
 
 @magic_factory(
-    save_dir={'widget_type': 'FileEdit'}, 
+    save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
     chunk_size={'widget_type' : 'LiteralEvalLineEdit'}, 
     margin={'widget_type' : 'LiteralEvalLineEdit'},    
 )
@@ -574,7 +577,7 @@ def assess_segmentation(
     average_precision: bool = True, 
     object_count: bool = True, 
     #diagnostics: bool,
-    save_dir: str = './', 
+    save_dir: str = 'choose directory', 
     save_prefix: str = 'segmentation-metrics',
     name: str = '', 
     show: bool = True, 
@@ -627,7 +630,15 @@ def _assess_segmentation(
         object_count, 
         exclude_chunks_less_than)
     # generate plots
-    plot_accuracy_metrics(data, save_prefix, save_dir, show)
+    plot_accuracy_metrics(
+        data, 
+        save_prefix, 
+        save_dir, 
+        variation_of_information, 
+        average_precision, 
+        object_count, 
+        show
+        )
 
     # Diagnostic plots
     # plot_diagnostics(...)
@@ -650,11 +661,11 @@ def model_assessment(
     ):
     # save info
     os.makedirs(save_dir, exist_ok=True)
-    data_path = os.path.join(save_dir, save_prefix + f'_{name}_metrics.csv')
+    #data_path = os.path.join(save_dir, save_prefix + f'_{name}_metrics.csv')
     # need to get the slices from the model-produced layer
-    data, stats = get_accuracy_metrics(slices, ground_truth, model_segmentation, name,
+    data, stats = get_accuracy_metrics(slices, ground_truth, model_segmentation, name, save_prefix,
                                 variation_of_information, average_precision, 
-                                object_count, data_path, exclude_chunks_less_than)
+                                object_count, save_dir, exclude_chunks_less_than)
     return data, stats
 
 
@@ -687,59 +698,164 @@ def get_slices_from_chunks(arr_shape, chunk_size, margin):
             slices.append((sl, cr)) # useage: 4d_labels[sl][cr]
     return slices
 
-# -------------------
-# Validation Analysis
-# -------------------
+# ---------------------------------
+# Comparing models or ground truths
+# ---------------------------------
 
-@magic_factory()
-def validation_analysis(
-    ground_truth: napari.layers.Labels,
-    model_1: Union[None, napari.layers.Labels],
-    model_2: Union[None, napari.layers.Labels],
-    model_3: Union[None, napari.layers.Labels],
-    model_4: Union[None, napari.layers.Labels],
-    chunk_size: tuple = (10, 256, 256), 
-    margin: tuple = (1, 64, 64),
-    variation_of_information: bool = True, 
-    average_precision: bool = True, 
-    object_count: bool = True, 
-    #diagnostics: bool,
-    save_dir: str = './', 
-    save_prefix: str = 'segmentation-metrics',
-    show: bool = True, 
-    exclude_chunks_less_than: int = 10, 
+@magic_factory(
+    comparison_directory={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+    fig_size={'widget_type' : 'LiteralEvalLineEdit'}, 
+    VI_indexs={'widget_type' : 'LiteralEvalLineEdit'},
+    output_directory={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+)
+def compare_segmentations(
+        comparison_directory: str, 
+        save_name: str,
+        file_exstention: str ='pdf', 
+        output_directory: Union[str, None] = None,
+        variation_of_information: bool =True, 
+        object_difference: bool =True, 
+        average_precision: bool =True, 
+        n_rows: int =2, 
+        n_col: int =2, 
+        comparison_name: str= "Model comparison",
+        VI_indexs: tuple =(0, 1), # (0, 0)
+        OD_index: int =2, # (0, 1)
+        AP_index: int =3, # (1, 0)
+        fig_size: tuple =(9, 7),
+        palette: str='Set2',
+         top_white_space: float =5, #TODO eventually figure out how to make this a slider 0-100
+        left_white_space: float =15, 
+        right_white_space: float =5, 
+        bottom_white_space: float =10, 
+        horizontal_white_space: float =40,
+        vertical_white_space: float =40,
+        font_size: int =12,
+        style: str ='ticks', 
+        context: str='paper', 
+        show: bool=True
     ):
-    models = [model_1, model_2, model_3, model_4]
-    models = [m for m in models if m is not None]
-    data_0 = [] # data for each image chunk
-    data_1 = [] # data for average precision graph (i.e., computed from above)
-    model_stats = []
-    for model in models:
-        d, s = model_assessment(
-            ground_truth, 
-            model, 
-            save_prefix,
-            chunk_size, 
-            margin, 
-            save_dir,
-            variation_of_information, 
-            average_precision, 
-            object_count, 
-            exclude_chunks_less_than)
-        data_0.append(d[0])
-        data_1.append(d[1])
-        model_stats.append(s)
-    # plot
-    ...
-    # statistics
-    ...
-    # concatenate dfs xxxx
-    data_0 = pd.concat(data_0)
-    data_1 = pd.concat(data_1)
-    model_stats = pd.concat(model_stats)
-    # save results
-    ...
-#print()
+    '''
+    Make a custom plot to compare sementation models based on output from 
+    the assess segmentation tool. The only requirement is that files you 
+    want to compare are in the same directory, which should be specified
+    as the comparison_directory. The plots will be saved into a single 
+    file <save_name>.<file_exstention> (e.g., )
+
+    Parameters
+    ----------
+    comparison_directory: str
+        Directory in which to look for the data to plot
+    save_name:
+        Name to give the output file. Please don't add a file
+        extension.
+    file_exstention: str (.pdf)
+        Specify one of the following file types: .pdf, .png, .svg
+    output_directory: str or None (None)
+        Directory into which to save the file. If None, 
+        will save into the comparison directory. 
+    variation_of_information: bool (True)
+        Should we plot VI? This will be plotted in 2 plots:
+        one for oversegmentation and one for undersegmentation. 
+    object_difference: bool (True)
+        Should we plot OD? Will be plotted into a single plot. 
+    average_precision: bool (True)
+        Should we plot AP? Will be plotted into a single plot.
+    comparison_name: str ("Model comparison")
+        Label to give comparison in plots. Will be used as
+        an axis label in OD and VI plots
+    n_rows: int (2) 
+        How many rows of plots. 1 - 4.
+        e.g. - two because we need all four plots for VI, OD, and AP
+             - four because we need all four plots for VI, OD, and AP
+               and want to plot everthing in the same column. 
+    n_col: int =2, 
+        How many rows of plots. 1 - 4.
+        e.g. - two because we need all four plots for VI, OD, and AP
+             - four because we need all four plots for VI, OD, and AP
+               and want to plot everthing in the same row. 
+        (e.g., two because we need all four plots for VI, OD, and AP)
+    VI_indexs: tuple of int or int (0, 1)
+        Which plot to put the VI plots in. The first index refers to
+        the oversegmentation plot and the second refers to the 
+        undersegmentation plot For instructions see "Using integer indexes" 
+        in the function Notes below. 
+    OD_index: tuple of int or int (2)
+        Which plot to put the OD plot in.For instructions see 
+        "Using integer indexes". 
+    AP_index: tuple of int or int (3)
+        Which plot to put the AP plot in.For instructions see 
+        "Using integer indexes". 
+    fig_size: tuple (9, 9)
+        Size of the figure you want to make (in inches). 
+    raincloud_orientation: str ("h")
+        Orientation for raincloudplots. "h" for horizontal. 
+        "v" for vertical. 
+    raincloud_sigma: float (0.2)
+        The sigma value used to construct the kernel density estimate 
+        in the raincloudplot. Determines the smoothness of the 
+        half violinplot/density estimate parts of the plot. Larger values
+        result in smoother curves. 
+    palette: str ('Set2')
+        pandas colour palette to use. See the pandas palette documentation
+        for details. 
+    top_white_space: float (3)
+        percent of the total figure size that should remain white space 
+        above the plots.
+    left_white_space: float (15)
+        percent of the total figure size that should remain white space 
+        to the left of the plots.
+    right_white_space: float (5) 
+        percent of the total figure size that should remain white space 
+        to the right the plots.
+    bottom_white_space: float (17)
+        percent of the total figure size that should remain white space 
+        below the plots.
+    horizontal_white_space: float (16)
+        percent of the total figure size that should remain white space 
+        between the plots horizontally.
+    vertical_white_space: float (16)
+        percent of the total figure size that should remain white space 
+        between the plots vertically.
+    font_size: int (12)
+        Size of the axis label and ticks font
+    style: str ("ticks")
+        Pandas style. Please see pandas documentation for more info and
+        options.  
+    context: str ("paper")
+        Pandas context. Please see pandas documentation for more info and
+        options.  
+    show: bool (True)
+        Do you want to see the plot in the matplotlib viewer once it has 
+        been saved?
+
+    Notes
+    -----
+
+        Using integer indexes
+        ---------------------
+        Numbers 0-4 that tells you which position to place the 
+        oversegmentation and undersegmentation plots, respectively 
+        Note that no matter how rows and columns are arranged, 
+        the numbering will start at the top left plot and proceed
+        left to write (much like reading English).
+        e.g. - for VI plots, (0, 1) in a 2x2 grid of plots will place
+               the VI plots in top two plots 
+             - for OD plot, 3 in a 1x4 grid will place the OD plot 
+
+
+    '''
+    raincloud_orientation ='h'
+    raincloud_sigma =0.2
+    comparison_plots(comparison_directory, save_name, file_exstention, 
+        output_directory, variation_of_information, 
+        object_difference, average_precision, n_rows, n_col, 
+        comparison_name, VI_indexs, OD_index, AP_index,
+        fig_size, raincloud_orientation, raincloud_sigma,
+        palette, top_white_space, left_white_space, 
+        right_white_space, bottom_white_space, horizontal_white_space,
+        vertical_white_space, font_size, style, context, show)
+
 
 # ----------------
 # Helper Functions

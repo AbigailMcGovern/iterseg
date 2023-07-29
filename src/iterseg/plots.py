@@ -5,6 +5,9 @@ import os
 import pandas as pd
 from pathlib import Path
 import ptitprince as pt
+import seaborn as sns
+from typing import Union
+import matplotlib
 
 # ----------
 # Loss Plots
@@ -157,34 +160,68 @@ def VI_plot(
             df, 
             cond_ent_over="GT | Output",  
             cond_ent_under="Output | GT", 
-            lab="",
+            lab='Variation of information',
             save=False, 
-            show=True):
+            show=True, 
+            ax=None, 
+            title=True, 
+            palette='Set2', 
+            orient='h', 
+            sigma=0.2, 
+            compare=False
+            ):
     #df = pd.read_csv(path)
     overseg = df[cond_ent_over].values
     o_groups = [cond_ent_over] * len(overseg)
     underseg = df[cond_ent_under].values
     u_groups = [cond_ent_under] * len(underseg)
     groups = o_groups + u_groups
-    x = 'Variation of information'
+    x = lab
     y = 'Conditional entropy'
     data = {
         x : groups, 
         y : np.concatenate([overseg, underseg])
         }
     data = pd.DataFrame(data)
-    o = 'h'
-    pal = 'Set2'
-    sigma = .2
-    f, ax = plt.subplots(figsize=(12, 10))
-    pt.RainCloud(x = x, y = y, data = data, palette = pal, bw = sigma,
-                 width_viol = .6, ax = ax, orient = o)
+    if ax is None:
+        f, ax = plt.subplots(figsize=(8, 6))
+    
+    pt.RainCloud(x=x, y=y, data=data, palette=palette, bw=sigma,
+                 width_viol=.6, ax=ax, orient=orient)
     p = Path(save)
-    plt.title(p.stem)
+    if title:
+        plt.title(p.stem)
     if save:
         plt.savefig(save, bbox_inches='tight')
     if show:
         plt.show()
+
+
+
+def VI_plot_compare(
+            df, 
+            ax0,
+            ax1, 
+            comparison_name,
+            conditions,
+            cond_ent_over="VI: GT | Output",  
+            cond_ent_under="VI: Output | GT", 
+            palette='Set2', 
+            orient='h', 
+            sigma=0.2,
+            name='model_name',
+            ):
+    pt.RainCloud(x=name, y=cond_ent_over, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
+                 width_viol=.6, ax=ax0, orient=orient, alpha=0.8, move=0.3)
+    ax0.set_ylabel(comparison_name)
+    sns.despine(ax=ax0)
+    ax0.legend([],[], frameon=False)
+    pt.RainCloud(x=name, y=cond_ent_under, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
+                 width_viol=.6, ax=ax1, orient=orient, alpha=0.8, move=0.3)
+    ax1.set_ylabel(comparison_name)
+    sns.despine(ax=ax1)
+    ax1.legend([],[], frameon=False)
+
 
 
 def experiment_VI_plots(
@@ -215,14 +252,14 @@ def experiment_VI_plots(
     o = 'h'
     pal = 'Set2'
     sigma = .2
-    f, axs = plt.subplots(1, 2, figsize=(14, 10)) #, sharex=True) #, sharey=True)
+    f, axs = plt.subplots(1, 2, figsize=(8, 6)) #, sharex=True) #, sharey=True)
     ax0 = axs[0]
     ax1 = axs[1]
     pt.RainCloud(x = x, y = cond_ent_over, data = data, palette = pal, bw = sigma,
-                 width_viol = .6, ax = ax0, orient = o)
+                 width_viol = .6, ax = ax0, orient = o, move=0.3)
     ax0.set_title('Over-segmentation conditional entropy')
     pt.RainCloud(x = x, y = cond_ent_under, data = data, palette = pal, bw = sigma,
-                 width_viol = .6, ax = ax1, orient = o)
+                 width_viol = .6, ax = ax1, orient = o, move=0.3)
     ax1.set_title('Under-segmentation conditional entropy')
     f.suptitle(title)
     os.makedirs(out_dir, exist_ok=True)
@@ -244,15 +281,19 @@ def plot_experiment_APs(paths, names, title, out_dir, out_name, show=True):
     plot_AP(dfs, names, out_path, title, show=show)
 
 
-def plot_AP(dfs, names, out_path, title, thresh_name='threshold', ap_name='average_precision', show=True):
+
+def plot_AP(dfs, names, out_path, title, 
+            thresh_name='threshold', ap_name='average_precision', 
+            show=True, add_title=True, ):
     plt.rcParams.update({'font.size': 16})
-    plt.rcParams["figure.figsize"] = (10,10)
+    plt.rcParams["figure.figsize"] = (8,8)
     fig = plt.figure()
     for df in dfs:
         plt.plot(df[thresh_name].values, df[ap_name].values)
     plt.xlabel('IoU threshold')
     plt.ylabel('Average precision')
-    plt.title(title)
+    if add_title:
+        plt.title(title)
     plt.legend(names)
     fig.savefig(out_path)
     if show:
@@ -292,7 +333,13 @@ def plot_experiment_no_diff(paths, names, title, out_dir, out_name, col_name='n_
         plt.show()
     
 
-def plot_count_difference(df, title, out_path, col_name='Count difference', show=True):
+def plot_count_difference(
+        df, 
+        title, 
+        out_path, 
+        col_name='Count difference', 
+        show=True, 
+        ):
     plt.rcParams.update({'font.size': 16})
     groups = ['model', ] * len(df)
     n_diff = df[col_name].values
@@ -318,64 +365,250 @@ def plot_count_difference(df, title, out_path, col_name='Count difference', show
         plt.show()
 
 
-if __name__ == '__main__':
-    import re
-    #name = 'loss_z-1_z-2_y-1_y-2_y-3_x-1_x-2_x-3_c_cl.csv'
-    #name = 'loss_210401_150158_z-1_y-1_x-1__wBCE2-1-1.csv'
-    #dir_ = '/Users/amcg0011/Data/pia-tracking/cang_training/210331_training_0'
-    #dir_ = '/Users/amcg0011/Data/pia-tracking/cang_training/210401_150158_z-1_y-1_x-1__wBCE2-1-1'
-    root_dir = '/home/abigail/data/platelet-segmentation-training'
-    pattern = re.compile(r'\d{6}_\d{6}_')
-    loss_pattern = re.compile(r'loss_\d{6}_\d{6}_')
-    val_loss_pattern = re.compile(r'validation-loss_\d{6}_\d{6}_')
-    date = '210513'
-    for d in os.listdir(root_dir):
-        mo = pattern.search(d)
-        if mo is not None and d.startswith(date):
-            train_dir = os.path.join(root_dir, d)
-            for f in os.listdir(train_dir):
-                #print(f)
-                l_mo = loss_pattern.search(f)
-                vl_mo = val_loss_pattern.search(f)
-                if vl_mo is not None and f.endswith('.csv'):
-                    val_loss_path = os.path.join(train_dir, f)
-                elif l_mo is not None and f.endswith('.csv'):
-                    loss_path = os.path.join(train_dir, f)
-                if f == 'log.txt':
-                    with open(os.path.join(train_dir, f)) as log:
-                        lines = log.readlines()
-                        for line in lines:
-                            if line.startswith('Loss function:'):
-                                loss_function = line[15:-1]
-            # check that we found the loss files
-            do = True
-            try:
-                assert loss_path is not None
-            except:
-                print('Could not find losses for ', d)
-                do = False
-            try:
-                assert val_loss_path is not None
-            except:
-                print('Could not find validation losses for ', d)
-                do = False
-            if loss_function is None:
-                loss_function = 'Unknown'
-                print('could not find loss function in training log')
-            # save the loss plots
-            if do:
-                print(d)
-                save_channel_loss_plot(loss_path)
-                print('Saved channel losses for ', d)
-                save_loss_plot(loss_path, loss_function, val_loss_path)
-                print('Saved loss plots for ', d)
 
-    #path = os.path.join(dir_, name)
-    #save_channel_loss_plot(path)
-    #v_name = 'validation-loss_z-1_z-2_y-1_y-2_y-3_x-1_x-2_x-3_c_cl.csv'
-    #v_name = 'validation-loss_210401_150158_z-1_y-1_x-1__wBCE2-1-1.csv'
-    #v_path = os.path.join(dir_, v_name)
-    #loss_function = 'Weighted BCE Loss (2, 1, 1)'
-    #save_loss_plot(path, loss_function, v_path)
+def compare_count_difference(
+        df, 
+        ax,
+        comparison_name,
+        conditions, 
+        col_name='Count difference', 
+        palette='Set2', 
+        orient='h', 
+        sigma=0.2,
+        name='model_name',
+        ):
+    conditions = pd.unique(df[name])
+    pt.RainCloud(x=name, y=col_name, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
+                 width_viol=.6, ax=ax, orient=orient, alpha=0.8, move=0.3)
+    ax.set_ylabel(comparison_name)
+    sns.despine(ax=ax)
+    ax.legend([],[], frameon=False)
+    
 
 
+def compare_AP(
+        df, 
+        ax, 
+        palette, 
+        conditions,
+        name='model_name', 
+        ap_col='average_precision', 
+        thresh_col='threshold'
+        ):
+    conditions = pd.unique(df[name])
+    sns.lineplot(x=thresh_col, y=ap_col, hue=name, hue_order=conditions, data=df, ax=ax, palette=palette)
+    ax.set_xlabel('IOU threshold')
+    ax.set_ylabel('Average precision')
+    sns.despine(ax=ax)
+
+
+def comparison_plots(
+        comparison_directory: str, 
+        save_name: str,
+        file_exstention: str ='pdf', 
+        output_directory: Union[str, None] = None,
+        variation_of_information: bool =True, 
+        object_difference: bool =True, 
+        average_precision: bool =True, 
+        n_rows: int =2, 
+        n_col: int =2, 
+        comparison_name: str= "Model comparison",
+        VI_indexs: tuple =(0, 1), # (0, 0)
+        OD_index: int =2, # (0, 1)
+        AP_index: int =3, # (1, 0)
+        fig_size: tuple =(7, 6), 
+        raincloud_orientation: str='h',
+        raincloud_sigma: float=0.2,
+        palette: str='Set2',
+        top_white_space: float =5, #TODO eventually figure out how to make this a slider 0-100
+        left_white_space: float =15, 
+        right_white_space: float =5, 
+        bottom_white_space: float =10, 
+        horizontal_white_space: float =40,
+        vertical_white_space: float =40,
+        font_size: int =30,
+        style: str ='ticks', 
+        context: str='paper', 
+        show: bool=True
+    ):
+    '''
+    Make a custom plot to compare sementation models based on output from 
+    the assess segmentation tool. The only requirement is that files you 
+    want to compare are in the same directory, which should be specified
+    as the comparison_directory. The plots will be saved into a single 
+    file <save_name>.<file_exstention> (e.g., )
+
+    Parameters
+    ----------
+    comparison_directory: str
+        Directory in which to look for the data to plot
+    save_name:
+        Name to give the output file. Please don't add a file
+        extension.
+    file_exstention: str (.pdf)
+        Specify one of the following file types: .pdf, .png, .svg
+    output_directory: str or None (None)
+        Directory into which to save the file. If None, 
+        will save into the comparison directory. 
+    variation_of_information: bool (True)
+        Should we plot VI? This will be plotted in 2 plots:
+        one for oversegmentation and one for undersegmentation. 
+    object_difference: bool (True)
+        Should we plot OD? Will be plotted into a single plot. 
+    average_precision: bool (True)
+        Should we plot AP? Will be plotted into a single plot.
+    comparison_name: str ("Model comparison")
+        Label to give comparison in plots. Will be used as
+        an axis label in OD and VI plots
+    n_rows: int (2) 
+        How many rows of plots. 1 - 4.
+        e.g. - two because we need all four plots for VI, OD, and AP
+             - four because we need all four plots for VI, OD, and AP
+               and want to plot everthing in the same column. 
+    n_col: int =2, 
+        How many rows of plots. 1 - 4.
+        e.g. - two because we need all four plots for VI, OD, and AP
+             - four because we need all four plots for VI, OD, and AP
+               and want to plot everthing in the same row. 
+        (e.g., two because we need all four plots for VI, OD, and AP)
+    VI_indexs: tuple of int or int (0, 1)
+        Which plot to put the VI plots in. The first index refers to
+        the oversegmentation plot and the second refers to the 
+        undersegmentation plot For instructions see "Using integer indexes" 
+        in the function Notes below. 
+    OD_index: tuple of int or int (2)
+        Which plot to put the OD plot in.For instructions see 
+        "Using integer indexes". 
+    AP_index: tuple of int or int (3)
+        Which plot to put the AP plot in.For instructions see 
+        "Using integer indexes". 
+    fig_size: tuple (9, 9)
+        Size of the figure you want to make (in inches). 
+    raincloud_orientation: str ("h")
+        Orientation for raincloudplots. "h" for horizontal. 
+        "v" for vertical. 
+    raincloud_sigma: float (0.2)
+        The sigma value used to construct the kernel density estimate 
+        in the raincloudplot. Determines the smoothness of the 
+        half violinplot/density estimate parts of the plot. Larger values
+        result in smoother curves. 
+    palette: str ('Set2')
+        pandas colour palette to use. See the pandas palette documentation
+        for details. 
+    top_white_space: float (3)
+        percent of the total figure size that should remain white space 
+        above the plots.
+    left_white_space: float (15)
+        percent of the total figure size that should remain white space 
+        to the left of the plots.
+    right_white_space: float (5) 
+        percent of the total figure size that should remain white space 
+        to the right the plots.
+    bottom_white_space: float (17)
+        percent of the total figure size that should remain white space 
+        below the plots.
+    horizontal_white_space: float (16)
+        percent of the total figure size that should remain white space 
+        between the plots horizontally.
+    vertical_white_space: float (16)
+        percent of the total figure size that should remain white space 
+        between the plots vertically.
+    font_size: int (12)
+        Size of the axis label and ticks font
+    style: str ("ticks")
+        Pandas style. Please see pandas documentation for more info and
+        options.  
+    context: str ("paper")
+        Pandas context. Please see pandas documentation for more info and
+        options.  
+    show: bool (True)
+        Do you want to see the plot in the matplotlib viewer once it has 
+        been saved?
+
+    Notes
+    -----
+
+        Using integer indexes
+        ---------------------
+        Numbers 0-4 that tells you which position to place the 
+        oversegmentation and undersegmentation plots, respectively 
+        Note that no matter how rows and columns are arranged, 
+        the numbering will start at the top left plot and proceed
+        left to write (much like reading English).
+        e.g. - for VI plots, (0, 1) in a 2x2 grid of plots will place
+               the VI plots in top two plots 
+             - for OD plot, 3 in a 1x4 grid will place the OD plot 
+
+
+    '''
+    # Read in tables and collate data
+    # -------------------------------
+    VIOD_files = [os.path.join(comparison_directory, f) \
+                  for f in os.listdir(comparison_directory) \
+                    if f.endswith('_scores.csv')]
+    metrics_VIOD = [pd.read_csv(p) for p in VIOD_files]
+    metrics_VIOD = pd.concat(metrics_VIOD).reset_index(drop=True)
+    AP_files = [os.path.join(comparison_directory, f) \
+                  for f in os.listdir(comparison_directory) \
+                    if f.endswith('_AP_curve.csv')]
+    metrics_AP = [pd.read_csv(p) for p in AP_files]
+    metrics_AP = pd.concat(metrics_AP).reset_index(drop=True)
+    
+    conditions = pd.unique(metrics_VIOD['model_name'])
+    
+    # plotting
+    # --------
+    matplotlib.rcParams.update({'font.size': font_size})
+    sns.set_context(context)
+    sns.set_style(style)
+    is_int = []
+    if variation_of_information:
+        is_int.append(isinstance(VI_indexs[0], int))
+        is_int.append(isinstance(VI_indexs[1], int))
+    if average_precision:
+        is_int.append(isinstance(AP_index, int))
+    if object_difference:
+        is_int.append(isinstance(OD_index, int))
+    fig, axs = plt.subplots(nrows=n_rows, ncols=n_col)
+    if np.sum(is_int) == len(is_int):
+        axs = axs.ravel()
+    fig.set_size_inches(fig_size)
+    #plt.rcParams.update({'font.size': font_size})
+    if variation_of_information:
+        VI_plot_compare(metrics_VIOD, axs[VI_indexs[0]], axs[VI_indexs[1]], 
+                        comparison_name, conditions,
+                        palette=palette, 
+                        orient=raincloud_orientation, 
+                        sigma=raincloud_sigma, 
+                        name='model_name')
+    if object_difference:
+        compare_count_difference(metrics_VIOD, axs[OD_index], comparison_name, conditions,
+                                 col_name='Count difference', 
+                                 palette=palette, orient=raincloud_orientation, 
+                                 sigma=raincloud_sigma, name='model_name')
+    if average_precision:
+        compare_AP(metrics_AP, axs[AP_index], palette, conditions, name='model_name', 
+                   ap_col='average_precision', thresh_col='threshold')
+
+    # White space
+    # -----------
+    right = 1 - (right_white_space / 100)
+    top = 1 - (top_white_space / 100)
+    left = left_white_space / 100
+    bottom = bottom_white_space / 100
+    wspace = horizontal_white_space / 100
+    hspace = vertical_white_space / 100
+    fig.subplots_adjust(right=right, left=left, bottom=bottom, top=top, wspace=wspace, hspace=hspace)
+    
+    matplotlib.rcParams.update({'font.size': font_size})
+    
+    # Save figure
+    # -----------
+    if output_directory is None:
+        output_directory = comparison_directory
+    n = save_name + '.' + file_exstention
+    save_path = os.path.join(output_directory, n)
+    fig.savefig(save_path)
+
+    if show:
+        plt.show()

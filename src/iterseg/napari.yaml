@@ -20,6 +20,9 @@ contributions:
   - id: iterseg.assess_segmentation
     title: Create assess_segmentation
     python_name: iterseg._dock_widgets:assess_segmentation
+  - id: iterseg.compare_segmentations
+    title: Create compare_segmentations
+    python_name: iterseg._dock_widgets:compare_segmentations
   widgets:
   - command: iterseg.UNetPredictWidget
     display_name: U Net Predict Widget
@@ -33,3 +36,5 @@ contributions:
     display_name: combine_layers
   - command: iterseg.assess_segmentation
     display_name: assess_segmentation
+  - command: iterseg.compare_segmentations
+    display_name: compare_segmentations

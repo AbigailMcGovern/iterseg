@@ -18,4 +18,4 @@ data_path_2 = os.path.join(DATA_PATH, 'GT_in_frames')
 gt = read_data(data_path_2, 'individual frames')
 
 save_path = os.path.join(DATA_PATH, 'temp')
-_assess_segmentation(ground_truth=gt, model_segmentation=seg, save_dir=save_path)
+_assess_segmentation(ground_truth=gt, model_segmentation=seg, save_dir=save_path, name='230728')
