@@ -1,15 +1,16 @@
 from genericpath import exists
 import napari
 from iterseg.train import train_unet
-from iterseg._train_from_napari import train_from_viewer
+from iterseg._dock_widgets import _train_from_viewer
 import numpy as np
 from pathlib import Path
 from shutil import rmtree
 import os
 
-CURRENT_PATH = Path(__file__).parent.resolve()
-IS_PATH = CURRENT_PATH.parents[1]
-DATA_PATH = str(IS_PATH / 'data')
+FILE_PATH = __file__
+ITERSEG_PATH = Path(FILE_PATH).parents[1]
+DATA_PATH = os.path.join(ITERSEG_PATH, 'data')
+OUT_PATH = os.path.join(DATA_PATH, 'temp')
 
 
 xs = [np.random.random((10, 256, 256)) for _ in range(15)]
@@ -45,4 +46,5 @@ def test_train_pipeline():
         v.add_image(image, scale=(4, 1, 1))
     for gt in ground_truth:
         v.add_labels(gt, scale=(4, 1, 1))
-    train_from_viewer(v, n_each=5, epochs=1)
+    _train_from_viewer(v, v.layers['images'], v.layers['ground_truth'], OUT_PATH,
+                       n_each=5, epochs=1, predict_labels=False,)
