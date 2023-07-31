@@ -6,7 +6,7 @@ import numpy as np
 import os
 from pathlib import Path
 import re
-from .plots import VI_plot, plot_AP, plot_count_difference, experiment_VI_plots
+from .plots import VI_plot, plot_AP, plot_count_difference
 
 import pandas as pd
 from skimage.measure import regionprops
@@ -85,6 +85,17 @@ def get_accuracy_metrics(
         gt_data = gt_data.data
     if isinstance(model_result, napari.layers.Labels):
         model_result = model_result.data
+    if gt_data.ndim != model_result.ndim:
+        dim_dif = gt_data.ndim - model_result.ndim
+        if dim_dif == -1:
+            # if 3D and 4D will assume 3D needs to be replicated t times (data is tzyx) and stacked
+            gt_data = [gt_data, ] * model_result.shape[0]
+            gt_data = np.stack(gt_data)
+        elif dim_dif == 1:
+            model_result = [model_result, ] * gt_data.shape[0]
+            model_result = np.stack(model_result)
+        else:
+            raise ValueError('Ground truth and model result must be either 3D or 4D arrays')
     for s_, c_ in slices:
         gt = gt_data[s_]
         gt = np.squeeze(gt)[c_]
@@ -256,6 +267,7 @@ def plot_accuracy_metrics(
     data: tuple,
     prefix: str,
     save_dir: str,
+    name: str,
     variation_of_information: bool, 
     average_precision: bool, 
     object_count: bool,
@@ -276,40 +288,22 @@ def plot_accuracy_metrics(
     df0 = data[0]
     df1 = data[1]
     if variation_of_information:
-        save_path = os.path.join(save_dir, prefix + '_VI-plot.png')
+        n = prefix + '_' + name + '_VI_plot.pdf'
+        VI_path = os.path.join(save_dir, n)
         VI_plot(
                 df0, 
                 cond_ent_over='VI: GT | Output', 
                 cond_ent_under='VI: Output | GT', 
-                save=save_path, show=show)
+                save=VI_path, show=show)
     if average_precision:
-        save_path = os.path.join(save_dir, prefix + '_AP-plot.png')
+        n = prefix + '_' + name + '_AP_plot.pdf'
+        AP_path = os.path.join(save_dir, n)
         df1 = [df1, ]
-        plot_AP(df1, [prefix, ], save_path, 'Average precision', show=show)
+        plot_AP(df1, [prefix, ], AP_path, 'Average precision', show=show)
     if object_count:
-        #save_path = os.path.join(save_dir, prefix + '_count-plot.png')
-        plot_count_difference(df0, 'Object count difference', save_dir, show=show)
-
-
-
-def plot_model_comparison(
-    data_0: list, 
-    data_1: list, 
-    names: list,
-    prefix: str, 
-    save_dir: str, 
-    AP: bool, 
-    VI: bool, 
-    ND: bool,
-    show: bool = True,
-    ):
-    if AP:
-        plot_AP(data_1, names, save_dir, 'Comparison of model average precsision', show=show)
-    if VI: # 
-        experiment_VI_plots(data_0, names, 'Comparison of Model VI subscores', prefix, save_dir, 
-        cond_ent_over='VI: GT | Output', cont_ent_under='VI: GT | Output', show=show)
-    if ND:
-        pass
+        n = prefix + '_' + name + '_OD_plot.pdf'
+        OD_path = os.path.join(save_dir, n)
+        plot_count_difference(df0, 'Object count difference', OD_path, show=show)
 
 
 

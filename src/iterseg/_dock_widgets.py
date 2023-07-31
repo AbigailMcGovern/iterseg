@@ -16,6 +16,8 @@ import tensorstore as ts
 import pandas as pd
 from .plots import comparison_plots
 from typing import Union
+import json
+from pathlib import Path
 
 
 # ------------
@@ -37,7 +39,8 @@ def train_from_viewer(
     viewer: napari.viewer.Viewer, 
     image_stack: napari.layers.Image, 
     labels_stack: napari.layers.Labels,
-    scale, 
+    output_dir: Union[str, None]=None, 
+    scale: tuple=(1, 1, 1), 
     mask_prediction='mask', 
     centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P
     affinities_extent=1, 
@@ -47,31 +50,78 @@ def train_from_viewer(
     epochs=4,
     validation_prop=0.2, 
     n_each=50,
-    output_dir='.', 
     save_labels=True,
     ):
-    image_4D_stack = image_stack.data
-    labels_4D_stack = labels_stack.data
+    _train_from_viewer(viewer, image_stack, labels_stack, output_dir, scale, 
+        mask_prediction, centre_prediciton, affinities_extent, training_name, 
+        loss_function, learning_rate, epochs, validation_prop, n_each, save_labels)
+
+
+def _train_from_viewer(
+    viewer: napari.viewer.Viewer, 
+    image_stack: napari.layers.Image, 
+    labels_stack: napari.layers.Labels,
+    output_dir: Union[str, None]=None, 
+    scale: tuple=(1, 1, 1), 
+    mask_prediction='mask', 
+    centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P
+    affinities_extent=1, 
+    training_name='my-unet',
+    loss_function='BCELoss', 
+    learning_rate=0.01, 
+    epochs=4,
+    validation_prop=0.2, 
+    n_each=50,
+    predict_labels: bool=True,
+    save_labels: bool=True,
+    ):
+
+    # Prepare training data
+    # ---------------------
+    if isinstance(image_stack, napari.layers.Image):
+        image_4D_stack = image_stack.data
+    else:
+        image_4D_stack = image_stack
+    if isinstance(labels_stack, napari.layers.Labels):
+        labels_4D_stack = labels_stack.data
+    else:
+        labels_4D_stack = labels_stack
     assert image_4D_stack.shape == labels_4D_stack.shape
-    channels_list = construct_channels_list(affinities_extent, mask_prediction, 
-                                        centre_prediciton)
+
     condition_name = [training_name, ]
     image_list = [image_4D_stack[i, ...] for i in range(image_4D_stack.shape[0])]
     labels_list = [labels_4D_stack[i, ...] for i in range(labels_4D_stack.shape[0])]
+    del image_4D_stack
+    del labels_4D_stack
+
+    # Construct training info
+    # -----------------------
+    channels_list = construct_channels_list(affinities_extent, mask_prediction, 
+                                        centre_prediciton)
     conditions_list = construct_conditions_list(image_list, loss_function, 
                                                 learning_rate, epochs, scale)
     exp_dict = get_experiment_dict(channels_list, condition_name, 
                                    conditions_list=conditions_list, 
                                    validation_prop=validation_prop, 
                                    n_each=n_each)
+
+    # Run training experiment
+    # -----------------------
     u_path = run_experiment(exp_dict, image_list, labels_list, output_dir)
-    if save_labels:
-        save_path = os.path.join(output_dir, training_name + '_labels-prediction.zarr')
-    else:
-        save_path = None
-    labels_layer = predict_output_chunks_widget(viewer, image_stack, None, unet=u_path[0], 
+
+    # Predict full labels
+    # -------------------
+    if predict_labels:
+        if save_labels:
+            save_path = os.path.join(output_dir, training_name + '_labels-prediction.zarr')
+        else:
+            save_path = None
+        labels_layer = predict_output_chunks_widget(viewer, image_stack, None, unet=u_path[0], 
                                                 which_unet='file', save_path=save_path, 
                                                 name=training_name)
+    
+    # Save metadata
+    # -------------
     meta = {
         'unet' : u_path[0], 
         'chunk_size' : (10, 256, 256), 
@@ -87,7 +137,13 @@ def train_from_viewer(
         'n_each' : n_each, 
         'labels_path' : save_path
     }
-    labels_layer.metadata.update()
+    if isinstance(labels_layer, napari.layers.Labels):
+        labels_layer.metadata.update(meta)
+    json_object = json.dumps(meta, indent=4)
+    meta_path = os.path.join(output_dir, Path(u_path).stem + '_meta.json')
+    with open(meta_path, "w") as outfile:
+        outfile.write(json_object)
+
 
 
 def construct_channels_list(
@@ -138,7 +194,8 @@ def construct_conditions_list(
 # -------------------------
 
 @magic_factory(
-    data_path={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+    directory={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+    data_file={'widget_type': 'FileEdit'},
     data_type={'choices': ['individual frames', 'image stacks']},
     layer_name={'widget_type' : 'LineEdit'},
     layer_type={'choices': ['Image', 'Labels']},
@@ -147,13 +204,14 @@ def construct_conditions_list(
 )
 def load_data(
     napari_viewer: napari.viewer.Viewer, 
-    data_path: str, 
-    # name_pattern: str, 
-    data_type: str,
     layer_name:str,
     layer_type: str,
+    data_type: str ='individual frames',
+    directory: Union[str, None] =None, 
+    data_file: Union[str, None] =None,
     scale: tuple =(1, 1, 1),
     translate: tuple =(0, 0, 0),
+    split_channels: bool=False
     ):
     '''
     Load the data into the viewer as a stack of 3D image frames. 
@@ -175,20 +233,22 @@ def load_data(
     translate: tuple of float
         Translation of the image origin in z, y, x format
     '''
-    data_path = str(data_path)
-    _load_data(napari_viewer, data_path, data_type, 
-                layer_name, layer_type, scale, translate)
+    _load_data(napari_viewer, layer_name, 
+               layer_type, data_type,
+                 directory, data_file,
+                scale, translate, split_channels)
 
 
 def _load_data(
     napari_viewer: napari.viewer.Viewer, 
-    data_path: str, 
-    # name_pattern: str, 
-    data_type: str,
-    layer_name:str,
+    layer_name: str,
     layer_type: str,
+    data_type: str ='individual frames',
+    directory: Union[str, None] =None, 
+    data_file: Union[str, None] =None,
     scale: tuple =(1, 1, 1),
     translate: tuple =(0, 0, 0),
+    split_channels: bool=False
     ):
     '''
     Load the data into the viewer as a stack of 3D image frames. 
@@ -210,38 +270,67 @@ def _load_data(
     translate: tuple of float
         Translation of the image origin in z, y, x format
     '''
-    imgs = read_data(data_path, data_type)
-    scale = (1, ) + scale
-    translate = (0,) + translate
+    if directory is not None:
+        directory = str(directory)
+    if data_file is not None:
+        data_file = str(data_file)
+    imgs, uses_directory = read_data(directory, data_file, data_type)
+    if imgs.ndim > 3:
+        if not split_channels:
+            add_to_scale = (1, ) * (imgs.ndim - 3)
+            add_to_translate = (0, ) * (imgs.ndim - 3)
+        else: 
+            add_to_scale = (1, ) * (imgs.ndim - 4)
+            add_to_translate = (0, ) * (imgs.ndim - 4)
+        scale = add_to_scale + scale
+        translate = add_to_translate + translate
     if layer_type == 'Image':
-        napari_viewer.add_image(imgs, scale=scale, name=layer_name, translate=translate)
+        if not split_channels:
+            napari_viewer.add_image(imgs, scale=scale, name=layer_name, translate=translate)
+        else:
+            for i in range(imgs.shape[0]):
+                napari_viewer.add_image(imgs[i, ...], scale=scale, name=layer_name, translate=translate)
     if layer_type == 'Labels':
         napari_viewer.add_labels(imgs, scale=scale, name=layer_name, translate=translate)
 
 
 
-def read_data(data_path, data_type):
+def read_data(directory, data_file, data_type):
     possible_suf = ['.zarr', '.zar', '.tiff', '.tif']
-    if not os.path.isdir(data_path) or data_path.endswith('.zarr'):
-        data_paths = [data_path, ]
-    else:
+    # is the data coming from a directory (not a zarr file)
+    uses_directory = directory is not None
+    if uses_directory:
+        uses_directory = os.path.isdir(directory) and not directory.endswith('.zarr') and not directory.endswith('.zar')
+    # is the data coming from a single file
+    single_file = data_file is not None
+    if single_file:
+        if data_file.endswith('.tiff') or data_file.endswith('.tif'):
+            data_paths = [data_file, ]
+    elif not uses_directory:
+        is_zarr = directory.endswith('.zarr') or directory.endswith('.zar')
+        if is_zarr:
+            data_paths = [directory, ]
+    elif uses_directory:
         data_paths = []
-        for f in os.listdir(data_path):
+        for f in os.listdir(directory):
             bool_list = [f.endswith(s) for s in possible_suf]
             if True in bool_list:
-                data_paths.append(os.path.join(data_path, f))
+                data_paths.append(os.path.join(directory, f))
     imgs = []
     data_paths = sorted(data_paths)
     for p in data_paths:
         im = read_with_correct_modality(p)
         imgs.append(im)
-    # if data is in stack/s (4D stacks of 3D frames)
-    if data_type == 'image stacks' and len(imgs) > 1:
-        imgs = np.concatenate(imgs)
-    # if data is in individual 3D frames
-    if data_type == 'individual frames':
-        imgs = np.stack(imgs)
-    return imgs
+    if uses_directory:
+        # if data is in stack/s (4D stacks of 3D frames)
+        if data_type == 'image stacks' and len(imgs) > 1:
+            imgs = np.concatenate(imgs)
+        # if data is in individual 3D frames
+        if data_type == 'individual frames':
+            imgs = np.stack(imgs)
+    else:
+        imgs = imgs[0]
+    return imgs, uses_directory
 
 
 def generate_4D_stack(path_list, shape):
@@ -605,10 +694,12 @@ def _assess_segmentation(
     #diagnostics: bool,
     save_dir: str = 'choose directory', 
     save_prefix: str = 'segmentation-metrics',
-    name: str = '',
+    name: Union[str, None] = None,
     show: bool = True, 
     exclude_chunks_less_than: int = 10,
     ):
+    if name == None:
+        name = save_prefix
     # save info
     os.makedirs(save_dir, exist_ok=True)
     data_path = os.path.join(save_dir, save_prefix + '_metrics.csv')
@@ -634,6 +725,7 @@ def _assess_segmentation(
         data, 
         save_prefix, 
         save_dir, 
+        name,
         variation_of_information, 
         average_precision, 
         object_count, 
@@ -707,9 +799,10 @@ def get_slices_from_chunks(arr_shape, chunk_size, margin):
     fig_size={'widget_type' : 'LiteralEvalLineEdit'}, 
     VI_indexs={'widget_type' : 'LiteralEvalLineEdit'},
     output_directory={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+    file_exstention={'choices': ['pdf', 'svg', 'png']},
 )
 def compare_segmentations(
-        comparison_directory: str, 
+       comparison_directory: str, 
         save_name: str,
         file_exstention: str ='pdf', 
         output_directory: Union[str, None] = None,
@@ -722,15 +815,15 @@ def compare_segmentations(
         VI_indexs: tuple =(0, 1), # (0, 0)
         OD_index: int =2, # (0, 1)
         AP_index: int =3, # (1, 0)
-        fig_size: tuple =(9, 7),
+        fig_size: tuple =(7, 6), 
         palette: str='Set2',
-         top_white_space: float =5, #TODO eventually figure out how to make this a slider 0-100
+        top_white_space: float =5, #TODO eventually figure out how to make this a slider 0-100
         left_white_space: float =15, 
         right_white_space: float =5, 
         bottom_white_space: float =10, 
         horizontal_white_space: float =40,
         vertical_white_space: float =40,
-        font_size: int =12,
+        font_size: int =30,
         style: str ='ticks', 
         context: str='paper', 
         show: bool=True
