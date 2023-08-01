@@ -94,7 +94,9 @@ def nth_affinity(labels, n, axis):
         s_n = [slice(None, None)] * len(labs_pad.shape) 
         s_n[axis] = slice(i + n, i + n + 1)
         s_n = tuple(s_n)
-        new = labs_pad[s_0] - labs_pad[s_n]
+        new_0 = labs_pad[s_0]
+        new_1 = labs_pad[s_n]
+        new = new_0 - new_1
         new = np.squeeze(new)
         if len(new) > 0:
             affinities.append(new)

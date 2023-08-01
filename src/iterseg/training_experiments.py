@@ -57,6 +57,22 @@ def get_experiment_dict(
     scale=(4, 1, 1),
     **kwargs
     ):
+    '''
+    Info about conditions to test. 
+
+    Parameters
+    ----------
+    channels_list: list
+        ...
+    condition_names: list
+        ...
+    conditions_list: list
+        ...
+    name: str
+    validation_prop: float
+    n_each: int
+    scale: tuple of float
+    '''
     # get the kwargs for obtaining the training data
     experiment = {}
     experiment['get_train_data'] = {

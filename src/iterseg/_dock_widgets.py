@@ -98,12 +98,18 @@ def _train_from_viewer(
     # -----------------------
     channels_list = construct_channels_list(affinities_extent, mask_prediction, 
                                         centre_prediciton)
+    print('Channels list:')
+    print(channels_list)
     conditions_list = construct_conditions_list(image_list, loss_function, 
                                                 learning_rate, epochs, scale)
+    print('Conditions list:')
+    print(conditions_list)
     exp_dict = get_experiment_dict(channels_list, condition_name, 
                                    conditions_list=conditions_list, 
                                    validation_prop=validation_prop, 
                                    n_each=n_each)
+    print('Experiment dict:')
+    print(exp_dict)
 
     # Run training experiment
     # -----------------------
