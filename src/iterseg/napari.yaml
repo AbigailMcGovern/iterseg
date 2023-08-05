@@ -23,6 +23,9 @@ contributions:
   - id: iterseg.compare_segmentations
     title: Create compare_segmentations
     python_name: iterseg._dock_widgets:compare_segmentations
+  - id: iterseg.segment_data
+    title: Create segment_data
+    python_name: iterseg._dock_widgets:segment_data
   widgets:
   - command: iterseg.UNetPredictWidget
     display_name: U Net Predict Widget
@@ -38,3 +41,5 @@ contributions:
     display_name: assess_segmentation
   - command: iterseg.compare_segmentations
     display_name: compare_segmentations
+  - command: iterseg.segment_data
+    display_name: segment_data

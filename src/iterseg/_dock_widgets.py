@@ -18,6 +18,7 @@ from .plots import comparison_plots
 from typing import Union
 import json
 from pathlib import Path
+from .segmentation import segmenters
 
 
 # ------------
@@ -50,11 +51,12 @@ def train_from_viewer(
     epochs=4,
     validation_prop=0.2, 
     n_each=50,
+    predict_labels: bool=True,
     save_labels=True,
     ):
     _train_from_viewer(viewer, image_stack, labels_stack, output_dir, scale, 
         mask_prediction, centre_prediciton, affinities_extent, training_name, 
-        loss_function, learning_rate, epochs, validation_prop, n_each, save_labels)
+        loss_function, learning_rate, epochs, validation_prop, n_each, predict_labels, save_labels)
 
 
 def _train_from_viewer(
@@ -119,7 +121,7 @@ def _train_from_viewer(
     # -------------------
     if predict_labels:
         if save_labels:
-            save_path = os.path.join(output_dir, training_name + '_labels-prediction.zarr')
+            save_path = os.path.join(str(output_dir), training_name + '_labels-prediction.zarr')
         else:
             save_path = None
         labels_layer = predict_output_chunks_widget(viewer, image_stack, None, unet=u_path[0], 
@@ -136,7 +138,7 @@ def _train_from_viewer(
         'centre_prediction' : centre_prediciton, 
         'affinities_extent' : affinities_extent, 
         'loss_function' : loss_function, 
-        'output_dir' : output_dir, 
+        'output_dir' : str(output_dir), 
         'learning_rate' : learning_rate, 
         'epochs' : epochs, 
         'validation_prop' : validation_prop, 
@@ -360,18 +362,48 @@ def read_with_correct_modality(path):
 
 
 
+# --------------
+# Segment widget
+# --------------
+
+@magic_factory(
+        save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+        chunk_size={'widget_type': 'LiteralEvalLineEdit'}, 
+        margin={'widget_type': 'LiteralEvalLineEdit'}, 
+        segmenter={'choices': list(segmenters.keys())}, 
+        network_or_config_file={'widget_type': 'FileEdit'}, 
+)
+def segment_data(
+    napari_viewer: napari.Viewer, 
+    input_volume_layer: napari.layers.Image,
+    save_dir: Union[str, None] = None,
+    name: str = 'labels-prediction',
+    segmenter: str='affinity-unet-watershed', 
+    network_or_config_file: Union[str, None] = None,
+    layer_reference: Union[str, None] = None,
+    chunk_size: tuple = (10, 256, 256),
+    margin: tuple = (1, 64, 64),
+    debug: bool = True
+    ):
+    seg_func = segmenters[segmenter]
+    seg_func(napari_viewer, input_volume_layer, save_dir, 
+             name, network_or_config_file, layer_reference, 
+             chunk_size, margin, debug)
+
+
+
 # -------------------
 # Predict dock widget
 # -------------------
 
-@tz.curry
-def self_destructing_callback(callback, disconnect):
-    def run_once_callback(*args, **kwargs):
-        result = callback(*args, **kwargs)
-        disconnect(run_once_callback)
-        return result
-
-    return run_once_callback
+#@tz.curry
+#def self_destructing_callback(callback, disconnect):
+#    def run_once_callback(*args, **kwargs):
+#        result = callback(*args, **kwargs)
+#        disconnect(run_once_callback)
+#        return result
+#
+#    return run_once_callback
 
 
 # magicfactory, forget the container below
@@ -379,13 +411,13 @@ def predict_output_chunks_widget(
         napari_viewer,
         input_volume_layer: napari.layers.Image,
         labels_layer: napari.layers.Labels, 
+        name: str = 'labels-prediction',
+        save_dir: Union[str, None] = None,
         chunk_size: str = '(10, 256, 256)',
         margin: str = '(1, 64, 64)',
         which_unet: str = 'default',
         unet: str = 'to choose file select above: file', 
         num_pred_channels: int = 5,  # can probs get this from last unet layer
-        save_path: Union[str, None] = None,
-        name: str = 'labels-prediction'
         ):
     use_default_unet = which_unet == 'default'
     if which_unet == 'file':
@@ -399,24 +431,26 @@ def predict_output_chunks_widget(
     if type(margin) is str:
         margin = ast.literal_eval(margin)
     viewer = napari_viewer
-    data = input_volume_layer.data
-    scale = viewer.layers[0].scale[1:] # lazy assumption that all layers have the same scale 
-    translate = viewer.layers[0].translate[1:] # and same translate 
+    #data = input_volume_layer.data
+    shape_4D = np.broadcast_shapes((1,) * 4, input_volume_layer.data.shape)
+    data = np.reshape(input_volume_layer.data, shape_4D)
+    scale = viewer.layers[0].scale[-3:] # lazy assumption that all layers have the same scale 
+    translate = viewer.layers[0].translate[-3:] # and same translate 
     #print(type(data), data.shape)
     ndim = len(chunk_size)
     # For now: use in-memory zarr array. When working, we can open on-disk
     # array with tensorstore so that we can paint into it even as the network
     # is writing to other timepoints. (exploding head emoji)
     output_labels = zarr.zeros(
-        data.shape, 
-        chunks=(1,) + data.shape[1:], 
+        shape=shape_4D, 
+        chunks=(1,) + data.shape[-3:], 
         dtype=np.int32, 
         )
     # in the future, we can add neural net output as an in-memory zarr array
     # that only displays the currently predicted output timepoint, and zeroes
     # out the rest. This is because the output volumes are otherwise
     # extremely large.
-    output_volume = np.zeros((num_pred_channels,) + data.shape[1:], dtype=np.float32) 
+    output_volume = np.zeros((num_pred_channels,) + data.shape[-3:], dtype=np.float32) 
     # Best would be to use napari.util.progress to have nested progress bars
     # here (one for timepoints, one for chunks, maybe one for watershed)
     output_layer = viewer.add_labels(
@@ -451,7 +485,8 @@ def predict_output_chunks_widget(
         ndim, 
         output_labels
     )
-    if save_path is not None:
+    if save_dir is not None:
+        save_path = os.path.join(str(save_dir), name + '.zarr')
         zarr.save(save_path, output_labels)
 
     return output_layer
@@ -502,22 +537,6 @@ def predict_segment_loop(
 
 
 # ------------------------------------------------
-# What was copy_data for... might need to ask Juan
-@magic_factory
-def copy_data(
-        napari_viewer: napari.viewer.Viewer,
-        source_layer: napari.layers.Layer,
-        target_layer: napari.layers.Layer,
-        ):
-    src_data = source_layer.data
-    dst_data = target_layer.data
-
-    ndim_src = src_data.ndim
-    ndim_dst = dst_data.ndim
-    slice_ = napari_viewer.dims.current_step
-    slicing = slice_[:ndim_dst - ndim_src]
-    dst_data[slicing] = src_data
-# ------------------------------------------------
 
 
 class UNetPredictWidget(widgets.Container):
@@ -529,7 +548,8 @@ class UNetPredictWidget(widgets.Container):
                         napari_viewer={'visible': False},
                         chunk_size={'widget_type': 'LiteralEvalLineEdit'},
                         unet={'widget_type': 'FileEdit'}, 
-                        which_unet={'choices': ['default', 'file', 'labels layer']}
+                        which_unet={'choices': ['default', 'file', 'labels layer']}, 
+                        save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
                         )
                 )
         self.append(widgets.Label(value='U-net prediction'))
