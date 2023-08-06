@@ -2,18 +2,14 @@ import ast
 from typing import Union
 import numpy as np
 import napari
-from napari.qt import thread_worker
-from magicgui import widgets, magic_factory
-import toolz as tz
-from .predict import predict_output_chunks, make_chunks
-from . import watershed as ws
+from magicgui import magic_factory
+from .predict import make_chunks
 from .training_experiments import get_experiment_dict, run_experiment
 import zarr
 from skimage.io import imread
 import os
 from .metrics import get_accuracy_metrics, plot_accuracy_metrics
 import tensorstore as ts
-import pandas as pd
 from .plots import comparison_plots
 from typing import Union
 import json
@@ -39,11 +35,10 @@ from .segmentation import segmenters
 def train_from_viewer(
     viewer: napari.viewer.Viewer, 
     image_stack: napari.layers.Image, 
-    labels_stack: napari.layers.Labels,
     output_dir: Union[str, None]=None, 
     scale: tuple=(1, 1, 1), 
     mask_prediction='mask', 
-    centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P
+    centre_prediciton='centreness-log', #lol btw this is a typo in the whole repo :P ... centredness 
     affinities_extent=1, 
     training_name='my-unet',
     loss_function='BCELoss', 
@@ -54,7 +49,29 @@ def train_from_viewer(
     predict_labels: bool=True,
     save_labels=True,
     ):
-    _train_from_viewer(viewer, image_stack, labels_stack, output_dir, scale, 
+    '''
+    Train a U-net from the viewer. This will ideally be updated in later releases to allow for other network archetectures/segmentation algorithms to be trained (more in the fashion of segment_data). 
+
+    Parameters
+    ----------
+    viewer: napari.viewer.Viewer
+
+    image_stack: napari.layers.Image 
+    output_dir: str or None (None)
+    scale: tuple (1, 1, 1) 
+    mask_prediction: str ('mask')
+    centre_prediciton: str ('centreness-log')
+    affinities_extent: int (1)
+    training_name: str ('my-unet')
+    loss_function: str ('BCELoss') 
+    learning_rate: scalar (0.01)
+    epochs: int (4)
+    validation_prop: (0.2)
+    n_each: (50)
+    predict_labels: bool (True)
+    save_labels: (True)
+    '''
+    _train_from_viewer(viewer, image_stack, output_dir, scale, 
         mask_prediction, centre_prediciton, affinities_extent, training_name, 
         loss_function, learning_rate, epochs, validation_prop, n_each, predict_labels, save_labels)
 
@@ -62,7 +79,6 @@ def train_from_viewer(
 def _train_from_viewer(
     viewer: napari.viewer.Viewer, 
     image_stack: napari.layers.Image, 
-    labels_stack: napari.layers.Labels,
     output_dir: Union[str, None]=None, 
     scale: tuple=(1, 1, 1), 
     mask_prediction='mask', 
@@ -84,10 +100,6 @@ def _train_from_viewer(
         image_4D_stack = image_stack.data
     else:
         image_4D_stack = image_stack
-    if isinstance(labels_stack, napari.layers.Labels):
-        labels_4D_stack = labels_stack.data
-    else:
-        labels_4D_stack = labels_stack
     assert image_4D_stack.shape == labels_4D_stack.shape
 
     condition_name = [training_name, ]
@@ -124,9 +136,11 @@ def _train_from_viewer(
             save_path = os.path.join(str(output_dir), training_name + '_labels-prediction.zarr')
         else:
             save_path = None
-        labels_layer = predict_output_chunks_widget(viewer, image_stack, None, unet=u_path[0], 
-                                                which_unet='file', save_path=save_path, 
-                                                name=training_name)
+        labels_layer = segment_data(napari_viewer=viewer, input_volume_layer=image_stack, 
+                                    save_dir= output_dir, name = f'{training_name}_labels',
+                                    segmenter='affinity-unet-watershed', network_or_config_file=u_path[0],
+                                    layer_reference= None, chunk_size=(10, 256, 256), margin=(1, 64, 64), 
+                                    debug=False)
     
     # Save metadata
     # -------------
@@ -213,7 +227,7 @@ def construct_conditions_list(
 def load_data(
     napari_viewer: napari.viewer.Viewer, 
     layer_name:str,
-    layer_type: str,
+    layer_type: str='Image',
     data_type: str ='individual frames',
     directory: Union[str, None] =None, 
     data_file: Union[str, None] =None,
@@ -226,20 +240,31 @@ def load_data(
 
     Parameters
     ----------
-    data_path: str
-        Path to the image stack (if data_type is "image stacks") or to 
-        the directory with image frames (if data_type is "individual frames"). 
-        This needs to end in .tiff/.tif or .zarr/.zar. 
-    data_type: str
-        Is are data in a 4D array (e.g., 3D images are stacked together into single file)? 
-        If so use "image stack". Are the data a series of individual 3D images?
-        If so use "individual images".
-    layer_type: str
+    layer name: str (None)
+        What will you call the layer of images you want to load in?
+    layer_type: str ('Image')
         Is the data you want to load a segmentation (use "Labels") or an image (use "Image")
+    data_type: str ('individual frames')
+        Are the data a series of individual 3D images? If so use "individual images". If the 
+        data are in the format of a single 4D or 5D image also use "individual images". If 
+        you have a directory with several 4D images, use "image stacks". 
+    directory:
+        Path to the a directory containing image stacks (4D) or individual frames (3D) or
+        to a zarr file. Data can be 3D (ZYX), 4D (TZYX), or 5D (CTZYX). Zarr files must
+        end in .zarr/.zar. If you want to load a single tiff file, leave blank. 
+    data_file: str (None)
+        Path to the image stack (if data_type is "image stacks") or to 
+        a single image frame (if data_type is "individual frames"). 
+        This needs to end in .tiff/.tif. If you want to load from a directory or 
+        want to load a zarr, leave blank. 
     scale: tuple of float
-        Scale of the image/segmentation to display in z, y, x format
+        Scale of the image/segmentation to display in z, y, x format.
     translate: tuple of float
-        Translation of the image origin in z, y, x format
+        Translation of the image origin in z, y, x format.
+    split_channels:
+        If you have a multichannel image in the format CTZYX (or any format really as
+        long as the first dim is the channel) you can split these. This is useful if 
+        you are loading 5D data to segment. 
     '''
     _load_data(napari_viewer, layer_name, 
                layer_type, data_type,
@@ -263,20 +288,31 @@ def _load_data(
 
     Parameters
     ----------
-    data_path: str
-        Path to the image stack (if data_type is "image stacks") or to 
-        the directory with image frames (if data_type is "individual frames"). 
-        This needs to end in .tiff/.tif or .zarr/.zar. 
-    data_type: str
-        Is are data in a 4D array (e.g., 3D images are stacked together into single file)? 
-        If so use "image stack". Are the data a series of individual 3D images?
-        If so use "individual images".
-    layer_type: str
+    layer name: str (None)
+        What will you call the layer of images you want to load in?
+    layer_type: str ('Image')
         Is the data you want to load a segmentation (use "Labels") or an image (use "Image")
+    data_type: str ('individual frames')
+        Are the data a series of individual 3D images? If so use "individual images". If the 
+        data are in the format of a single 4D or 5D image also use "individual images". If 
+        you have a directory with several 4D images, use "image stacks". 
+    directory:
+        Path to the a directory containing image stacks (4D) or individual frames (3D) or
+        to a zarr file. Data can be 3D (ZYX), 4D (TZYX), or 5D (CTZYX). Zarr files must
+        end in .zarr/.zar. If you want to load a single tiff file, leave blank. 
+    data_file: str (None)
+        Path to the image stack (if data_type is "image stacks") or to 
+        a single image frame (if data_type is "individual frames"). 
+        This needs to end in .tiff/.tif. If you want to load from a directory or 
+        want to load a zarr, leave blank. 
     scale: tuple of float
-        Scale of the image/segmentation to display in z, y, x format
+        Scale of the image/segmentation to display in z, y, x format.
     translate: tuple of float
-        Translation of the image origin in z, y, x format
+        Translation of the image origin in z, y, x format.
+    split_channels:
+        If you have a multichannel image in the format CTZYX (or any format really as
+        long as the first dim is the channel) you can split these. This is useful if 
+        you are loading 5D data to segment. 
     '''
     if directory is not None:
         directory = str(directory)
@@ -383,8 +419,61 @@ def segment_data(
     layer_reference: Union[str, None] = None,
     chunk_size: tuple = (10, 256, 256),
     margin: tuple = (1, 64, 64),
-    debug: bool = True
+    debug: bool = True # TODO change to false
     ):
+    '''
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+        The napari viewer - this is automatically passed to magicgui.
+    input_volume_layer: napari.layers.Image
+        The image layer that you want to segment. 
+    save_dir: str or None (None)
+        The directory into which you want to save the data. If you
+        do not choose one it will not be saved. Omit at own risk... 
+    name: str ('labels-prediction')
+        The name of the output layer and output file. 
+    segmenter: str ('affinity-unet-watershed')
+        This is the segmentation algorith you want to use. We have several 
+        options:
+            - affinity-unet-watershed: corresponds to the feature-based 
+              segmentation trained using train_from_viewer. The unet predicts
+              the object boundaries in each of three axes (affinities), 
+              a mask (foreground), and the location of object centres. 
+              These feature maps are used to segment the image with a
+              modified watershed algorith.
+            - unet-mask: segment with a unet to get only a single output
+              channel with a mask. Will be added as an option for training
+              in a future version. At the present this can be used to obtain
+              only the mask from the affinity-unet-watershed. 
+            - otsu-mask: a mask derived from smoothing the image with a 
+              gaussian kernel then using otsu thresholding. To be added soon. 
+            - blob-watershed: classical blob detection using a Laplacian of 
+              Gaussian kernel to find object coordinate and inverse image intensity
+              to segment the image using a cannonical watershed.
+    network_or_config_file: str or None (None)
+        A path to a neural network to use for the segmentation. If None and 
+        using affinity-unet-watershed, the defaul U-net will be used. It is 
+        trained to segment platelets. 
+    layer_reference: str or None (None)
+        A layer that the segmentation algorithm can get information from. 
+        For instance, if the train_from_viewer function is used, it will 
+        add a unet path to the layer metadata for any predicted labels.
+        This can be accessed by affinity-unet-watershed. 
+        TODO make sure this works!
+    cchunk_size: tuple = (10, 256, 256) 
+        What size of chunks would you like to compute scores for?  
+        Each chunk is represented as a point on the VI and object count plots.
+    margin: tuple = (1, 64, 64)
+        This is the margin or overlap between chunks. The default is set this 
+        way because this replicates the chunks that images might were segmented in. 
+        The margin will change the number and position of chunks created. 
+    debug: bool (False)
+        Do you need to debug the code or save intermediate Unet output to check?
+        If you use this, you will not be able to use the viewer until the code is 
+        finished running or until it crashes. The reason for this is that the code 
+        is run in the same thread as the viewer so  errors will be caught propery.
+    '''
     seg_func = segmenters[segmenter]
     seg_func(napari_viewer, input_volume_layer, save_dir, 
              name, network_or_config_file, layer_reference, 
@@ -392,187 +481,57 @@ def segment_data(
 
 
 
-# -------------------
-# Predict dock widget
-# -------------------
-
-#@tz.curry
-#def self_destructing_callback(callback, disconnect):
-#    def run_once_callback(*args, **kwargs):
-#        result = callback(*args, **kwargs)
-#        disconnect(run_once_callback)
-#        return result
-#
-#    return run_once_callback
-
-
-# magicfactory, forget the container below
-def predict_output_chunks_widget(
-        napari_viewer,
-        input_volume_layer: napari.layers.Image,
-        labels_layer: napari.layers.Labels, 
-        name: str = 'labels-prediction',
-        save_dir: Union[str, None] = None,
-        chunk_size: str = '(10, 256, 256)',
-        margin: str = '(1, 64, 64)',
-        which_unet: str = 'default',
-        unet: str = 'to choose file select above: file', 
-        num_pred_channels: int = 5,  # can probs get this from last unet layer
-        ):
-    use_default_unet = which_unet == 'default'
-    if which_unet == 'file':
-        unet = unet
-    elif which_unet == 'labels layer':
-        unet = labels_layer.metadata['unet']
-        chunk_size = labels_layer.metadata['chunk_size']
-        margin = labels_layer.metadata['margin']
-    if type(chunk_size) is str:
-        chunk_size = ast.literal_eval(chunk_size)
-    if type(margin) is str:
-        margin = ast.literal_eval(margin)
-    viewer = napari_viewer
-    #data = input_volume_layer.data
-    shape_4D = np.broadcast_shapes((1,) * 4, input_volume_layer.data.shape)
-    data = np.reshape(input_volume_layer.data, shape_4D)
-    scale = viewer.layers[0].scale[-3:] # lazy assumption that all layers have the same scale 
-    translate = viewer.layers[0].translate[-3:] # and same translate 
-    #print(type(data), data.shape)
-    ndim = len(chunk_size)
-    # For now: use in-memory zarr array. When working, we can open on-disk
-    # array with tensorstore so that we can paint into it even as the network
-    # is writing to other timepoints. (exploding head emoji)
-    output_labels = zarr.zeros(
-        shape=shape_4D, 
-        chunks=(1,) + data.shape[-3:], 
-        dtype=np.int32, 
-        )
-    # in the future, we can add neural net output as an in-memory zarr array
-    # that only displays the currently predicted output timepoint, and zeroes
-    # out the rest. This is because the output volumes are otherwise
-    # extremely large.
-    output_volume = np.zeros((num_pred_channels,) + data.shape[-3:], dtype=np.float32) 
-    # Best would be to use napari.util.progress to have nested progress bars
-    # here (one for timepoints, one for chunks, maybe one for watershed)
-    output_layer = viewer.add_labels(
-            output_labels,
-            name=name,
-            scale=scale,
-            translate=translate,
-            )
-
-    def handle_yields(yielded_val):
-        print(f"Completed timepoint {yielded_val}")
-
-    #chunks = make_chunks(data[0, ...].shape, chunk_size, margin)
-    #n_chunks = len(chunks[0])
-
-    launch_worker = thread_worker(
-        predict_segment_loop,
-        progress={'total': data.shape[0], 'desc': 'thread-progress'},
-        # this does not preclude us from connecting other functions to any of the
-        # worker signals (including `yielded`)
-        connect={'yielded': handle_yields},
-    )
-
-    worker = launch_worker( # this is where the process dies... "There appear to be 2 leaked semaphore objects to clean up at shutdown"
-        data, 
-        viewer, 
-        output_volume, 
-        unet, 
-        chunk_size, 
-        margin, 
-        use_default_unet,
-        ndim, 
-        output_labels
-    )
-    if save_dir is not None:
-        save_path = os.path.join(str(save_dir), name + '.zarr')
-        zarr.save(save_path, output_labels)
-
-    return output_layer
-
-
-def predict_segment_loop(
-        data, 
-        viewer, 
-        output_volume, 
-        unet, 
-        chunk_size, 
-        margin, 
-        use_default_unet,
-        ndim, 
-        output_labels
-    ):
-    for t in range(data.shape[0]):
-        #print(t)
-        viewer.dims.current_step = (t, 0, 0, 0)
-        slicing = (t, slice(None), slice(None), slice(None))
-        input_volume = np.asarray(data[slicing]).astype(np.float32)
-        input_volume /= np.max(input_volume)
-        current_output = np.pad(
-            np.zeros(output_volume.shape[1:], dtype=np.uint32),
-            1,
-            mode='constant',
-            constant_values=0,
-            )
-        crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-        # predict using unet
-        predict_output_chunks(
-            unet, 
-            input_volume, 
-            chunk_size, 
-            output_volume, 
-            margin=margin, 
-            use_default_unet=use_default_unet
-            )
-        ws.segment_output_image(
-            output_volume, #[slicing],
-            affinities_channels=(0, 1, 2),
-            thresholding_channel=3,
-            centroids_channel=4,
-            out=current_output.ravel())
-        output_labels[t, ...] = current_output[crop]
-        output_volume[:] = 0
-        yield t
-
-
-# ------------------------------------------------
-
-
-class UNetPredictWidget(widgets.Container):
-    def __init__(self, napari_viewer):
-        super().__init__(labels=False)
-        self.predict_widget = widgets.FunctionGui(
-                predict_output_chunks_widget,
-                param_options=dict(
-                        napari_viewer={'visible': False},
-                        chunk_size={'widget_type': 'LiteralEvalLineEdit'},
-                        unet={'widget_type': 'FileEdit'}, 
-                        which_unet={'choices': ['default', 'file', 'labels layer']}, 
-                        save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
-                        )
-                )
-        self.append(widgets.Label(value='U-net prediction'))
-        self.append(self.predict_widget)
-        self.predict_widget.napari_viewer.bind(napari_viewer)
-        self.viewer = napari_viewer
-        self.call_watershed = None
-
-
 # -----------------------
 # Ground Truth Generation
 # -----------------------
 
-@magic_factory()
+@magic_factory(
+        save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+)
 def generate_ground_truth(
     napari_veiwer: napari.Viewer,
     labels_to_correct: napari.layers.Labels, 
-    new_layer_name: str = 'Ground truth', 
-    save_path: str= './ground_truth.zarr'
+    new_layer_name: Union[str, None] = None, 
+    save_dir: Union[str, None]= None,
+    save_name: Union[str, None]= None,
+    frame_index: Union[int, None]= None,
 ):  
-    chunks = (1, ) + tuple(labels_to_correct.data.shape[1:])
-    labels = zarr.zeros_like(labels_to_correct.data, chunks=chunks)
-    labels[:] = labels_to_correct.data
+    """
+    Generate a new zarr file for ground truth + open with tensorstore. 
+    Tensorstore is apparently a bit faster than zarr when you correct 
+    a zarr image. 
+
+    Parameters
+    ----------
+    napari_veiwer: napari.Viewer
+        The napari viewer - this is automatically passed to magicgui.
+    labels_to_correct: napari.layers.Labels 
+        This is the labels layer you want to base your ground truth on. 
+    new_layer_name: str (None) 
+        The name of the layer you are going to create. 
+    save_dir: str (None)
+        The directory into which you want to save the ground truth 
+        file you are working on. 
+    save_name: str (None)
+        The save_name you want to use. If None, will use new_layer_name.
+    frame_index: int or None (None)
+        If None, the whole labels layer will be used to create the file. 
+        If an integer, only that frame (see the number on the slider at
+        the right hand side of napari) will be saved.
+    """
+    assert new_layer_name is not None, "Please choose a layer name"
+    assert save_dir is not None, "Please choose a directory to save the ground truth you want to work on to"
+    #assert save_name is not None, "Please choose a save name"
+    if save_name is None:
+        save_name = new_layer_name
+    if frame_index is None:
+        new_labels = labels_to_correct.data
+    else:
+        new_labels = labels_to_correct.data[frame_index, ...]
+    chunks = (1, ) + tuple(new_labels.shape[1:])
+    labels = zarr.zeros_like(new_labels, chunks=chunks)
+    labels[:] = new_labels
+    save_path = os.path.join(str(save_name), str(save_name) + '.zarr')
     zarr.save(save_path, labels)
     spec = {
          'driver': 'zarr',
@@ -692,12 +651,75 @@ def assess_segmentation(
     average_precision: bool = True, 
     object_count: bool = True, 
     #diagnostics: bool,
-    save_dir: str = 'choose directory', 
+    save_dir: Union[str, None] = None, 
     save_prefix: str = 'segmentation-metrics',
-    name: str = '', 
+    name: Union[str, None] = None, 
     show: bool = True, 
     exclude_chunks_less_than: int = 10,
     ):
+    '''
+    napari_viewer: napari.Viewer
+        The napari viewer - this is automatically passed to magicgui.
+    ground_truth: napari.layers.Labels
+        The ground truth that you want to use to assess the segmentation.
+    model_segmentation: napari.layers.Labels
+        The segmentation you want to assess. 
+    chunk_size: tuple = (10, 256, 256) 
+        What size of chunks would you like to compute scores for?  
+        Each chunk is represented as a point on the VI and object count plots.
+    margin: tuple = (1, 64, 64)
+        This is the margin or overlap between chunks. The default is set this 
+        way because this replicates the chunks that images might were segmented in. 
+        The margin will change the number and position of chunks created. 
+    variation_of_information: (True)
+        Will you assess VI?
+        The variation of information is defined as VI(X,Y) = H(X|Y) + H(Y|X). 
+        If X is the ground-truth segmentation, then H(X|Y) can be interpreted as 
+        the amount of under-segmentation and H(Y|X) as the amount of 
+        over-segmentation. In other words, a perfect over-segmentation will have 
+        H(X|Y)=0 and a perfect under-segmentation will have H(Y|X)=0.
+    average_precision: bool (True)
+        Will you assess AP?
+        Average precision is a combined measure of how accurate the model is at finding 
+        true positive (real) objects (we call this precision) and how many of ground 
+        truth real objects it found (this is called recall). 
+            Precision = TP / (TP + FP)
+            Recall = TP / (TP + FN)
+            Abbreviations: FN, false negative; TP, true positive; FP, false positive 
+        The assessment of whether an object is TP, FP, and FN depends on the threashold
+        of overlap between objects. Here we use the intersection of union (IoU), which is
+        the proportion of overlap between the bounding boxes of ground truth and model
+        segemented objects. AP is assessed using different IoU thresholds (from 0.35-0.95). 
+        The resultant data will be plotted as IoU by AP. 
+    object_count: bool (True)
+        Will you assess object count difference?
+        The object count difference is simply the number of objects difference between the
+        ground truth and the segementation. 
+            card(ground truth) - card(segmentation)
+        With this, the number of objects in ground truth and segementation + the percentage
+        difference are added to the final data frame. 
+    save_dir: str (None)
+        This is the directory to which you will save the output. The assessment will not 
+        run if you don't choose one. Ask yourself, why run an analysis without saving 
+        anything? 
+    save_prefix: str ('segmentation-metrics')
+        This is the prefix that will be used to save the data. Several files will be saved:
+            - <save_prefix>_AP_curve.csv (AP data)
+            - <save_prefix>_scores.csv (VI, OC, and data used to create AP)
+            - <save_prefix>_stats.csv (descriptive stats and 95% CI for variable is scores file)
+    name: str (None)
+        This is the name to give the model. This will be added in the data sheet in the column
+        model_name. This is important because it is used in compare_segmentations to assign the 
+        data to a group that can be compared to other groups. If None, the save_prefix will be
+        used.   
+    show: bool (True)
+        Do you want to see the plots at the end?
+    exclude_chunks_less_than: int (10)
+        What is the minimum number of objects you need to see in a chunk of ground truth data
+        to assess the chunk? Only use this if you KNOW you don't care about regions of the image 
+        with few objects. You will only know this by visually inspecting the data + understanding
+        your use case. 
+    '''
     _assess_segmentation(ground_truth, model_segmentation, 
                          chunk_size, margin, variation_of_information, average_precision, 
                          object_count, save_dir, save_prefix, name, show, exclude_chunks_less_than)
@@ -727,6 +749,7 @@ def _assess_segmentation(
     if name == None:
         name = save_prefix
     # save info
+    assert save_dir is not None, 'Please pick a directory to which to save the data.'
     os.makedirs(save_dir, exist_ok=True)
     data_path = os.path.join(save_dir, save_prefix + '_metrics.csv')
     # need to get the slices from the model-produced layer
@@ -787,15 +810,6 @@ def model_assessment(
     return data, stats
 
 
-def chunk_n_margin(meta, chunk_size, margin):
-    mcs = meta.get('chunk_size')
-    if mcs is not None:
-        chunk_size = mcs
-    mmg = meta.get('margin')
-    if mmg is not None:
-        margin = mmg
-    return chunk_size, margin
-
 
 def get_slices_from_chunks(arr_shape, chunk_size, margin):
     if len(arr_shape) <= 3:
@@ -815,6 +829,8 @@ def get_slices_from_chunks(arr_shape, chunk_size, margin):
             cr = tuple(slice(i, j) for i, j in crop)
             slices.append((sl, cr)) # useage: 4d_labels[sl][cr]
     return slices
+
+
 
 # ---------------------------------
 # Comparing models or ground truths
@@ -998,12 +1014,3 @@ def find_matching_labels(
 
 
 
-# -------------------
-# Hook implementation
-# -------------------
-
-
-#@napari_hook_implementation
-#def napari_experimental_provide_dock_widget():
-    # you can return either a single widget, or a sequence of widgets
-    #return [UNetPredictWidget, copy_data, train_from_viewer, load_train_data]

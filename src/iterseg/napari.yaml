@@ -2,9 +2,6 @@ name: iterseg
 schema_version: 0.1.0
 contributions:
   commands:
-  - id: iterseg.UNetPredictWidget
-    title: Create U Net Predict Widget
-    python_name: iterseg._dock_widgets:UNetPredictWidget
   - id: iterseg.train_from_viewer
     title: Create train_from_viewer
     python_name: iterseg._dock_widgets:train_from_viewer
@@ -27,8 +24,6 @@ contributions:
     title: Create segment_data
     python_name: iterseg._dock_widgets:segment_data
   widgets:
-  - command: iterseg.UNetPredictWidget
-    display_name: U Net Predict Widget
   - command: iterseg.train_from_viewer
     display_name: train_from_viewer
   - command: iterseg.load_data
