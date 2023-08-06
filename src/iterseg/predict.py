@@ -26,7 +26,8 @@ def load_unet(u_state_fn=DEFAULT_UNET_PATH):
     if u_state_fn is None:
         u_state_fn = DEFAULT_UNET_PATH
     u = unet_mod.UNet(in_channels=1, out_channels=5)
-    map_location = torch.device('cpu')  # for loading the pre-existing unet
+    device = get_device()
+    map_location = device  # for loading the pre-existing unet
     if torch.cuda.is_available() and not IGNORE_CUDA:
         u.cuda()
         map_location = None
@@ -119,7 +120,7 @@ def predict_chunk_feature_map(
     tensor = torch.from_numpy(input_volume[sl][np.newaxis, np.newaxis])
     if torch.cuda.is_available() and not IGNORE_CUDA:
         tensor = tensor.cuda()
-    predicted_array = unet(tensor).detach().cpu().numpy() # i think this will need to be changed to if statement for gpu
+    predicted_array = unet(tensor).detach().cpu().numpy() #
     if default_only_mask: # if using default network but only the mask channel is wanted
         predicted_array = predicted_array[3, ...]
     return predicted_array
