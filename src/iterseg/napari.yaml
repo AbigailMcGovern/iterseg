@@ -2,9 +2,6 @@ name: iterseg
 schema_version: 0.1.0
 contributions:
   commands:
-  - id: iterseg.UNetPredictWidget
-    title: Create U Net Predict Widget
-    python_name: iterseg._dock_widgets:UNetPredictWidget
   - id: iterseg.train_from_viewer
     title: Create train_from_viewer
     python_name: iterseg._dock_widgets:train_from_viewer
@@ -20,9 +17,16 @@ contributions:
   - id: iterseg.assess_segmentation
     title: Create assess_segmentation
     python_name: iterseg._dock_widgets:assess_segmentation
+  - id: iterseg.compare_segmentations
+    title: Create compare_segmentations
+    python_name: iterseg._dock_widgets:compare_segmentations
+  - id: iterseg.segment_data
+    title: Create segment_data
+    python_name: iterseg._dock_widgets:segment_data
+  - id: iterseg.save_frames
+    title: Create save_frames
+    python_name: iterseg._dock_widgets:save_frames
   widgets:
-  - command: iterseg.UNetPredictWidget
-    display_name: U Net Predict Widget
   - command: iterseg.train_from_viewer
     display_name: train_from_viewer
   - command: iterseg.load_data
@@ -33,3 +37,9 @@ contributions:
     display_name: combine_layers
   - command: iterseg.assess_segmentation
     display_name: assess_segmentation
+  - command: iterseg.compare_segmentations
+    display_name: compare_segmentations
+  - command: iterseg.segment_data
+    display_name: segment_data
+  - command: iterseg.save_frames
+    display_name: save_frames

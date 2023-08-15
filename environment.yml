@@ -1,0 +1,22 @@
+name: iterseg
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - dask
+  - pytorch
+  - scikit-image
+  - pandas
+  - zarr
+  - matplotlib
+  - napari
+  - pyqt
+  - numba
+  - seaborn
+  - pip
+  - pip:
+    #- platelet-unet-watershed
+    - tensorstore
+    - git+https://github.com/pog87/PtitPrince.git
+    - git+https://github.com/quantumjot/unet_segmentation_metrics.git
