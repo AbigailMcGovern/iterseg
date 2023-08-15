@@ -23,6 +23,9 @@ contributions:
   - id: iterseg.segment_data
     title: Create segment_data
     python_name: iterseg._dock_widgets:segment_data
+  - id: iterseg.save_frames
+    title: Create save_frames
+    python_name: iterseg._dock_widgets:save_frames
   widgets:
   - command: iterseg.train_from_viewer
     display_name: train_from_viewer
@@ -38,3 +41,5 @@ contributions:
     display_name: compare_segmentations
   - command: iterseg.segment_data
     display_name: segment_data
+  - command: iterseg.save_frames
+    display_name: save_frames

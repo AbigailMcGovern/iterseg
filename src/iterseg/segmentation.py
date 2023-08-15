@@ -1,6 +1,7 @@
 import numpy as np
 from skimage.segmentation import watershed
-from skimage.feature import peak_local_max, blob_log
+from skimage.feature import peak_local_max, blob_log, blob_dog
+from skimage.filters import gaussian
 from typing import Union, Callable
 import napari
 import json
@@ -30,7 +31,15 @@ def affinity_unet_watershed(
         debug: bool =False
     ):
     '''
-    ...
+    Segment a 3D image or stack of 3D images using a affinity-unet-watershed
+    algorithm. The image is passed to a U-Net, which outputs 5 feature maps:
+    (1) z-axis affinities, (2) y-axis affinities, (3) x-axis affinities, 
+    (4) foreground mask, (5) centre point predicition. The feature maps are
+    used in a modified watershed algorithms. The centre point prediciton is
+    used to find object centres and the foreground mask is used to determine
+    the pixels that need to be labeled. The affinities in each axis demarkate
+    the boundaries between objects and the waterhshed uses these to find the 
+    edges of objects. 
 
     Parameters
     ----------
@@ -529,6 +538,144 @@ def blob_watershed_prep_config(
 
 
 
+# ------------------
+# DoG Blob Watershed
+# ------------------
+
+def dog_blob_watershed(
+        napari_viewer, 
+        input_volume_layer: napari.layers.Image,
+        save_dir: Union[str, None] = None,
+        name: str = 'labels-prediction',
+        config_file: Union[str, None] = None,
+        layer_reference: Union[str, None] = None,
+        chunk_size: tuple = (10, 256, 256),
+        margin: tuple = (1, 64, 64),
+        debug: bool =False
+    ):
+    '''
+    Funtion for segmenting an image using DoG blob detection
+
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+        The viewer into which the resultant segmentation will be placed.
+    input_volume_layer: napari.layers.Image
+        The viewer layer with the image to be processed.
+    save_dir: str or None (None)
+        The directory into which to save the outputted segmentation. 
+    name: str ('labels-prediction')
+        The name with which to save the data. Also the name of the 
+        resultant segmentation layer that will be displayed in the 
+        viewer. 
+    config_file: str or None (None)
+        Path to a json file with any additional parameters. I'm sure
+        There is  a more elegant way to do this through the GUI, 
+        but I don't have the time to work on this for now. 
+    layer_reference: str or None (None)
+        If you need information from one of the layers, this is the
+        layer to get it from. This is fed into the custom config function. 
+        This function doesn't use this. 
+    chunk_size: tuple (10, 256, 256)
+         This tells you how big the chunks to be processed are
+    margin: tuple (1, 64, 64)
+        This tells you how much overlap between chunks is used
+    '''
+    segmentation_wrapper(dog_blob_watershed_for_chunks, dog_blob_watershed_prep_config, 
+                         napari_viewer, input_volume_layer, save_dir, name, config_file,
+                         layer_reference, chunk_size, margin, debug)
+
+
+def dog_blob_watershed_for_chunks(
+        input_volume, 
+        current_output, 
+        chunk_size, 
+        margin,
+        # specific
+        min_sigma,
+        max_sigma, 
+        threshold, 
+        **kwargs
+        ):
+    '''
+    Function that inserts the results of a DoG blob detection into
+    current_output.
+
+    Parameters
+    ----------
+    input_volume: array 
+        This is the image to process
+    chunk_size: tuple
+        Not used here.
+    margin: tuple
+        Not used here. 
+    current_output: array
+        This is the 3D array that stores the labels for the particular
+        slice. The labels are then written into the labels layer data, 
+        which is then displayed on the viewer. 
+    min_sigma: scalar or sequence of scalars
+        Minimum sigma of a gaussian kernel to use for the difference 
+        of gaussian (DoG) blob detection. The smaller this is, the smaller 
+        the smallest objects you detect will be.
+    max_sigma: scalar or sequence of scalars
+        Maximum sigma of a gaussian kernel to use for the DoG blob 
+        detection. The larger this is, the larger the smallest 
+        objects you detect will be.
+    threshold: float or None
+        The absolute lower bound for scale space maxima for LoG. 
+        Local maxima smaller than threshold are ignored.
+    gaus_sigma: scalar or sequence of scalars
+        The sigma to use for the gaussian smoothing used to make
+        the mask from the image.
+    '''
+    # find the blob seeds for the watershed
+    input_volume = np.pad(input_volume, pad_width=1)
+    dog = dog_image(input_volume, min_sigma, max_sigma)
+    mask = dog > threshold
+    markers = blob_dog(input_volume, min_sigma=min_sigma, max_sigma=max_sigma, 
+                        threshold=threshold)
+    distance = ndi.distance_transform_edt(input_volume)
+    #local_maxi = peak_local_max(distance, min_distance=3, labels=input_volume)
+    centroids = np.zeros(distance.shape, dtype=bool)
+    idx = tuple(markers.T.astype(int))[:-1] # there's an extra index
+    centroids[idx] = True
+    markers, num_objects = ndi.label(centroids) #, structure=np.ones((3,3,3)))
+    labels = watershed(-distance, markers, mask=mask)
+    #distance = ndi.distance_transform_edt(input_volume)
+    #mask = ws._get_mask(input_volume, gaus_sigma)
+    #labels = watershed(-distance, markers, mask=mask)
+    current_output[:, ...] = labels
+    
+
+
+def dog_blob_watershed_prep_config(
+        input_volume_layer, # not used here
+        unet_or_config_file, 
+        reference_layer, # not used here
+        max_sigma=1.5, 
+        min_sigma=1,
+        threshold=0.02, 
+        ):
+    if unet_or_config_file is not None:
+        config = read_config_json(unet_or_config_file)
+        val = config.get['max_sigma']
+        max_sigma = val if val is not None else max_sigma
+        val = config.get['min_sigma']
+        min_sigma = val if val is not None else min_sigma
+        val = config.get['threshold']
+        threshold = val if val is not None else threshold
+    new_kwargs = {
+        'max_sigma' : max_sigma, 
+        'min_sigma' : min_sigma,
+        'threshold' : threshold, 
+    }
+    return new_kwargs
+
+
+def dog_image(input_vol, sigma_min, sigma_max):
+    dog = gaussian(input_vol, sigma_min) - gaussian(input_vol, sigma_max)
+    return dog
+
 # ---------------
 # Common funcions
 # ---------------
@@ -566,13 +713,35 @@ def segmentation_wrapper(
 
     Parameters
     ----------
-    processing_function: function
-    config_prep_function: function
+    processing_function: Callable
+        The function you want to use to process the data. This function
+        should take key word arguments (**kwargs). The function must
+        take the following arguments in this order:
+            - input_volume: array (3D) - the image frame to be processed
+            - current_output: array (3D) - write the labels for the current frame here
+            - chunk_size: tuple (3D) - size of chunks  
+            - margin: tuple (3D) - size of margin
+    config_prep_function: Callable (None)
+        If not None, this function will be called before entering the 
+        segmentation loop. It prepares a dictionary to be fed to the 
+        process functioning as kew word arguments (**kwargs) when it
+        is executed. 
+            - input_volume_layer: napari.layers.Image - image layer to be processed
+            - network_or_config_file: str - where to find the file you want to use
+            - layer_reference: napari.layers.Layer - layer with metadata of interest
     napari_viewer: napari.Viewer
+        The napari viewer. 
     input_volume_layer: napari.layers.Image
+        The imput layer you want to segment. 
     save_dir: str or None
+        The directory to which you want to save the segmentation to. 
     name: str
-    config_file: str or None
+        The name you want to save the segmentation under. The segmentation
+        will automatically be saved as a zarr with the extention .zarr. You 
+        don't need to include an extension in the name. This name will also
+        be used as the layer name. 
+    network_or_config_file: str or None
+        This is the file containing a neural network of 
     layer_reference: str or None
     chunk_size: tuple
     margin: tuple
@@ -671,8 +840,9 @@ def segmentation_loop(
         config
     ):
     '''
-    This function runs the segmentation function on one 
-    3D frame at a time. 
+    This function runs the segmentation function on one 3D frame at a time. 
+    The function yeilds the current time point when done and this is printed
+    in the main thread. 
 
     Parameters
     ----------
@@ -716,6 +886,7 @@ segmenters = {
     'affinity-unet-watershed' : affinity_unet_watershed, 
     'unet-mask' : unet_mask, 
     'otsu-mask' : otsu_mask,
-    'blob-watershed' : blob_watershed,
+    'LoG-blob-watershed' : blob_watershed,
+    'DoG-blob-watershed' : dog_blob_watershed
 }
 

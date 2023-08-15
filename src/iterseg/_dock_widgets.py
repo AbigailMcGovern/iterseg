@@ -15,6 +15,8 @@ from typing import Union
 import json
 from pathlib import Path
 from .segmentation import segmenters
+import dask.array as da
+from dask import delayed
 
 
 # ------------
@@ -233,7 +235,9 @@ def load_data(
     data_file: Union[str, None] =None,
     scale: tuple =(1, 1, 1),
     translate: tuple =(0, 0, 0),
-    split_channels: bool=False
+    split_channels: bool=False, 
+    in_memory: bool=True,
+    save_stack: bool=False
     ):
     '''
     Load the data into the viewer as a stack of 3D image frames. 
@@ -265,11 +269,19 @@ def load_data(
         If you have a multichannel image in the format CTZYX (or any format really as
         long as the first dim is the channel) you can split these. This is useful if 
         you are loading 5D data to segment. 
+    in_memory:
+        Do you want all of the data to be loaded into your computer's memory (i.e., 
+        in RAM). Select false if your data is bigger than RAM or very large.
+    save_stack:
+        If you loaded a stack of images, do you want to save these as a single stack 
+        of zarr files. If you do this for a stack of labels, you will be able to paint
+        directly into the files when correcting labels. 
     '''
     _load_data(napari_viewer, layer_name, 
                layer_type, data_type,
                  directory, data_file,
-                scale, translate, split_channels)
+                scale, translate, split_channels, 
+                in_memory, save_stack)
 
 
 def _load_data(
@@ -281,7 +293,9 @@ def _load_data(
     data_file: Union[str, None] =None,
     scale: tuple =(1, 1, 1),
     translate: tuple =(0, 0, 0),
-    split_channels: bool=False
+    split_channels: bool=False, 
+    in_memory: bool=True,
+    save_stack: bool=False
     ):
     '''
     Load the data into the viewer as a stack of 3D image frames. 
@@ -313,12 +327,19 @@ def _load_data(
         If you have a multichannel image in the format CTZYX (or any format really as
         long as the first dim is the channel) you can split these. This is useful if 
         you are loading 5D data to segment. 
+    in_memory:
+        Do you want all of the data to be loaded into your computer's memory (i.e., 
+        in RAM). Select false if your data is bigger than RAM or very large.
+    save_stack:
+        If you loaded a stack of images, do you want to save these as a single stack 
+        of zarr files. If you do this for a stack of labels, you will be able to paint
+        directly into the files when correcting labels. 
     '''
     if directory is not None:
         directory = str(directory)
     if data_file is not None:
         data_file = str(data_file)
-    imgs, uses_directory = read_data(directory, data_file, data_type)
+    imgs, uses_directory = read_data(directory, data_file, data_type, in_memory)
     if imgs.ndim > 3:
         if not split_channels:
             add_to_scale = (1, ) * (imgs.ndim - 3)
@@ -339,10 +360,22 @@ def _load_data(
 
 
 
-def read_data(directory, data_file, data_type):
+def read_data(directory, data_file, data_type, in_memory):
+    """
+    When supplied with a directory that is a zarr, this function will open
+    the image as a zarr (not in memory). When supplied with a directory
+    of files, the function will open any tiffs or zarrs in the directoy
+    as a 4D stack of 3D images. When supplied with a single file that is
+    a tiff, the tiff will be loaded (regardless of dimension). 
+
+    If in_memory, the data will be opened as a numpy array. If this is 
+    set to False, the data will be opened as a dask array. This is neccessary
+    if your image is too big to fit in the computer's RAM. 
+    """
     possible_suf = ['.zarr', '.zar', '.tiff', '.tif']
     # is the data coming from a directory (not a zarr file)
     uses_directory = directory is not None
+    is_zarr = False
     if uses_directory:
         uses_directory = os.path.isdir(directory) and not directory.endswith('.zarr') and not directory.endswith('.zar')
     # is the data coming from a single file
@@ -352,28 +385,52 @@ def read_data(directory, data_file, data_type):
             data_paths = [data_file, ]
     elif not uses_directory:
         is_zarr = directory.endswith('.zarr') or directory.endswith('.zar')
-        if is_zarr:
-            data_paths = [directory, ]
     elif uses_directory:
         data_paths = []
         for f in os.listdir(directory):
             bool_list = [f.endswith(s) for s in possible_suf]
             if True in bool_list:
                 data_paths.append(os.path.join(directory, f))
-    imgs = []
-    data_paths = sorted(data_paths)
-    for p in data_paths:
-        im = read_with_correct_modality(p)
-        imgs.append(im)
-    if uses_directory:
-        # if data is in stack/s (4D stacks of 3D frames)
-        if data_type == 'image stacks' and len(imgs) > 1:
-            imgs = np.concatenate(imgs)
-        # if data is in individual 3D frames
-        if data_type == 'individual frames':
-            imgs = np.stack(imgs)
+    if is_zarr:
+        imgs = zarr.open(directory)
     else:
-        imgs = imgs[0]
+        imgs = []
+        data_paths = sorted(data_paths)
+        if in_memory:
+            lazy_imread = None
+        else:
+            lazy_imread = delayed(imread)
+        for p in data_paths:
+            im = read_with_correct_modality(p, in_memory, lazy_imread)
+            imgs.append(im)
+        if uses_directory:
+            if not in_memory:
+                sample = imgs[0].compute
+                [da.from_delayed(delayed_reader, shape=sample.shape, dtype=sample.dtype)
+                for delayed_reader in imgs]
+                del sample
+            # if data is in stack/s (4D stacks of 3D frames)
+            if data_type == 'image stacks' and len(imgs) > 1:
+                if in_memory:
+                    imgs = np.concatenate(imgs)
+                else:
+                    imgs = da.concatenate(imgs)
+            # if data is in individual 3D frames
+            if data_type == 'individual frames':
+                if in_memory:
+                    imgs = np.stack(imgs)
+                else:
+                    imgs = da.stack(imgs)
+        else:
+            if in_memory:
+                imgs = imgs[0]
+            else:
+                imgs = imgs[0].compute
+                if imgs.ndim > 3:
+                    chunks = (1, ) * imgs.ndim - 3 + imgs.shape[-3:]
+                else:
+                    chunks = 'auto'
+                imgs = da.from_array(imgs, chunks=chunks)
     return imgs, uses_directory
 
 
@@ -388,12 +445,16 @@ def generate_4D_stack(path_list, shape):
     return images
 
 
-def read_with_correct_modality(path):
-    if path.endswith('.tif') or path.endswith('.tiff'):
-        im = imread(path)
-    elif path.endswith('.zar') or path.endswith('.zarr'):
-        im = zarr.creation.open_array(path, 'r')
-        im = np.array(im)
+def read_with_correct_modality(path, in_memory, lazy_imread):
+    if in_memory:
+        if path.endswith('.tif') or path.endswith('.tiff'):
+            im = imread(path)
+        elif path.endswith('.zar') or path.endswith('.zarr'):
+            im = zarr.creation.open_array(path, 'r')
+            im = np.array(im)
+    else:
+        if path.endswith('.tif') or path.endswith('.tiff'):
+            im = lazy_imread(path)
     return im
 
 
@@ -531,23 +592,24 @@ def generate_ground_truth(
     chunks = (1, ) + tuple(new_labels.shape[1:])
     labels = zarr.zeros_like(new_labels, chunks=chunks)
     labels[:] = new_labels
-    save_path = os.path.join(str(save_name), str(save_name) + '.zarr')
+    save_path = os.path.join(str(save_dir), str(save_name) + '.zarr')
     zarr.save(save_path, labels)
-    spec = {
-         'driver': 'zarr',
-         'kvstore': {
-             'driver': 'file',
-             'path': save_path,
-         },
-         'metadata' : {
-             'dataType': str(labels.dtype),
-             'dimensions': list(labels.shape),
-             'blockSize': list(chunks),
-         },
-         'create': False,
-         'delete_existing': False,
-     }
-    labels = ts.open(spec)
+    #spec = {
+    #     'driver': 'zarr',
+    #     'kvstore': {
+    #         'driver': 'file',
+    #         'path': save_path,
+    #     },
+    #    # 'metadata' : {
+    #    #     'dataType': str(labels.dtype),
+    #    #     'dimensions': list(labels.shape),
+    #    #     'blockSize': list(chunks),
+    #    # },
+    #     'create': False,
+    #     'delete_existing': False,
+    # }
+    #labels = ts.open(spec)
+    labels = zarr.open(save_path, 'r+')
     napari_veiwer.add_labels(
         labels, 
         name=new_layer_name, 
@@ -990,6 +1052,43 @@ def compare_segmentations(
         palette, top_white_space, left_white_space, 
         right_white_space, bottom_white_space, horizontal_white_space,
         vertical_white_space, font_size, style, context, show)
+
+
+# -----------
+# Save frames
+# -----------
+
+@magic_factory(
+    save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+    frames={'widget_type' : 'LiteralEvalLineEdit'},
+)
+def save_frames(
+        napari_viewer: napari.Viewer, 
+        layer: napari.layers.Layer,
+        save_dir: Union[str, None]=None,
+        save_name: Union[str, None]=None,
+        frames: Union[tuple, int]=None, 
+        save_as_stack: bool=True,
+    ):
+    #if isinstance() # check if dask array
+    if isinstance(frames, tuple):
+        slices = [slice(f, f+1) for f in frames]
+        data = [layer.data[s] for s in slices]
+        if save_as_stack:
+            data = np.stack(data)
+            sp = os.path.join(str(save_dir), save_name + '.zarr')
+            zarr.save(sp, data)
+        else:
+            for f, d in zip(frames, data):
+                sn = f'{save_name}_f{f}'
+                sp = os.path.join(str(save_dir), sn + '.zarr')
+                zarr.save(sp, d)
+
+
+
+
+
+
 
 
 # ----------------
