@@ -53,7 +53,7 @@ Once you've opened napari, you can load image, labels, or shapes data through th
 
  ![find the widgets](https://github.com/AbigailMcGovern/iterseg/blob/main/docs/images/load_data_find.png)
 
-Once the widget appears at the right of the napari window, enter the name you want to give the data you are loading (this will appear in the layers pannel on the left of the window). Choose the type of layer you want to load (Image, Labels, or Shapes: segmentations are loaded as labels layer). You can load a folder of files or a zarr file using "choose directory" (zarrs are recognised as a folder of files) or you can load a tiff file using "choose file". 
+Once the widget appears at the right of the napari window, enter the name you want to give the data you are loading (this will appear in the layers pannel on the left of the window). Choose the type of layer you want to load (Image, Labels, or Shapes: segmentations are loaded as labels layer). You can load a folder of files or a zarr file using "choose directory" (zarrs are recognised as a folder of files) or you can load a tiff file using "choose file". You can tell the program what the scale of the 3D frames will be in (in the format (z, y, x)).
 
  ![load data](https://github.com/AbigailMcGovern/iterseg/blob/main/docs/images/load_data.png)
 
@@ -100,9 +100,11 @@ The "ground truth from ROI" tool can be found at **plugins/iterseg/ground_truth_
  ![ground truth from ROI](https://github.com/AbigailMcGovern/iterseg/blob/main/docs/images/gt_from_ROI.png)
 
 ## Training a network
-`iterseg` includes a widget for training a u-net for the u-net affinity watershed. ...
+`iterseg` includes a widget for training a u-net for the u-net affinity watershed. The training widget can be found at **plugins/iterseg/train_from_viewer**. Before training, you will need to load the images and ground truth you want to train from. The images and ground truth should each be a series of 3D frames that are stacked into a layer (we suggest loading from a series of frames in a directory). Once loaded, you are able to select a layer as the ground truth and a layer as the image data. You can tell the program what the scale of the output frames will be (in the format (z, y, x)). You can select what type of center prediction to use (we suggest centredness), what type of prediction to use for the mask, and what extent of affinities you want to train (if n = 1, the network will predict only the direct boundaries between objects in each axis, if greater than 1 the network will still predict the direct boundaires but will also predict where there is a new object n steps away - can be used as collateral learning to enhance training). Affinities extent is developmental. Please submit an issue for any problems. 
 
  ![train from viewer](https://github.com/AbigailMcGovern/iterseg/blob/main/docs/images/train_from_viewer.png)
+
+For the U-net training, we allow you to choose the learning rate for the [ADAM optimiser](https://arxiv.org/abs/1412.6980) used to train the network. You can also choose between binary cross entropy loss ([BCELoss](https://pytorch.org/docs/stable/generated/torch.nn.BCELoss.html)) and Dice loss ([DICELoss](https://arxiv.org/abs/1707.03237v3)). We have found in our data that BCE loss works better. You can also choose how many chunks of data are produced from each frame (n each) and how many epochs you want to train for the training will be done in n_each * n_frames batches with a minibatch size of 1. 
 
 In the future we hope to expand this training widget to enable training other types of networks. Please get involved if you feel you can help with this. 
 
