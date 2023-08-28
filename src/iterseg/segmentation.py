@@ -90,6 +90,7 @@ def affinity_watershed_prep_config(
     if isinstance(unet_or_config_file, pathlib.PurePath):
         unet_or_config_file = str(unet_or_config_file)
     if isinstance(unet_or_config_file, str):
+        affinities_extent = 1
         # Path provided
         # -------------
         if unet_or_config_file.endswith('.json'):
@@ -779,12 +780,16 @@ def segmentation_wrapper(
             translate=translate,
             )
 
+    max_t = data.shape[0] - 1
 
     # for yeilds
     # ----------
     def handle_yields(yielded_val):
         viewer.dims.current_step = (yielded_val, 0, 0, 0)
         print(f"Segmented t = {yielded_val}")
+        if yielded_val == max_t and save_dir is not None:
+            save_path = os.path.join(str(save_dir), name + '.zarr')
+            zarr.save(save_path, output_labels)
 
 
     # for errors
@@ -822,7 +827,7 @@ def segmentation_wrapper(
 
     # Save the data
     # -------------
-    if save_dir is not None:
+    if save_dir is not None and not debug:
         save_path = os.path.join(str(save_dir), name + '.zarr')
         zarr.save(save_path, output_labels)
 
@@ -862,6 +867,10 @@ def segmentation_loop(
         #print(t) 
         slicing = (t, slice(None), slice(None), slice(None))
         input_volume = np.asarray(data[slicing]).astype(np.float32)
+        if input_volume.min() == 0:
+            input_volume = remove_sum_zero_slices(input_volume)
+            #random_vol = np.random.normal(input_volume.mean(), size=input_volume.shape)
+            #input_volume = np.where(input_volume == 0, random_vol, input_volume).astype(np.float32)
         input_volume /= np.max(input_volume)
         current_output = np.pad(
             np.zeros(data.shape[1:], dtype=np.uint32), # not sure if this will work
@@ -872,9 +881,25 @@ def segmentation_loop(
         crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
         # predict using unet
         processing_function(input_volume, current_output, chunk_size, margin, **config)
+        #current_output[crop] = np.where(input_volume == 0, 0, current_output[crop])
         output_labels[t, ...] = current_output[crop]
         yield t
 
+
+def remove_sum_zero_slices(input_volume):
+    for ax_i in range(input_volume.ndim):
+            ax_nonzero_rows = []
+            for i in range(input_volume.shape[ax_i]):
+                s = [slice(None) for i in range(input_volume.ndim)]
+                s[ax_i] = slice(i, i+1)
+                s = tuple(s)
+                if input_volume[s].sum() != 0:
+                    ax_nonzero_rows.append(i)
+            s = [slice(None) for i in range(input_volume.ndim)]
+            s[ax_i] = ax_nonzero_rows
+            s = tuple(s)
+            input_volume = input_volume[s]
+    return input_volume
 
 
 # ------------
@@ -884,9 +909,9 @@ def segmentation_loop(
 # to be used in segment_data doc widget
 segmenters = {
     'affinity-unet-watershed' : affinity_unet_watershed, 
-    'unet-mask' : unet_mask, 
-    'otsu-mask' : otsu_mask,
-    'LoG-blob-watershed' : blob_watershed,
+  #  'unet-mask' : unet_mask, 
+   # 'otsu-mask' : otsu_mask,
+  #  'LoG-blob-watershed' : blob_watershed,
     'DoG-blob-watershed' : dog_blob_watershed
 }
 

@@ -1,4 +1,4 @@
-from ._dock_widgets import train_from_viewer, segment_data, combine_layers, generate_ground_truth, \
+from ._dock_widgets import train_from_viewer, segment_data, combine_layers,  \
     assess_segmentation, compare_segmentations
 
 __all__ = [

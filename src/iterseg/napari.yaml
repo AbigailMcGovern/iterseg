@@ -8,12 +8,6 @@ contributions:
   - id: iterseg.load_data
     title: Create load_data
     python_name: iterseg._dock_widgets:load_data
-  - id: iterseg.generate_ground_truth
-    title: Create generate_ground_truth
-    python_name: iterseg._dock_widgets:generate_ground_truth
-  - id: iterseg.combine_layers
-    title: Create combine_layers
-    python_name: iterseg._dock_widgets:combine_layers
   - id: iterseg.assess_segmentation
     title: Create assess_segmentation
     python_name: iterseg._dock_widgets:assess_segmentation
@@ -26,15 +20,14 @@ contributions:
   - id: iterseg.save_frames
     title: Create save_frames
     python_name: iterseg._dock_widgets:save_frames
+  - id: iterseg.ground_truth_from_ROI
+    title: Create ground_truth_from_ROI
+    python_name: iterseg._dock_widgets:ground_truth_from_ROI
   widgets:
   - command: iterseg.train_from_viewer
     display_name: train_from_viewer
   - command: iterseg.load_data
     display_name: load_data
-  - command: iterseg.generate_ground_truth
-    display_name: generate_ground_truth
-  - command: iterseg.combine_layers
-    display_name: combine_layers
   - command: iterseg.assess_segmentation
     display_name: assess_segmentation
   - command: iterseg.compare_segmentations
@@ -43,3 +36,5 @@ contributions:
     display_name: segment_data
   - command: iterseg.save_frames
     display_name: save_frames
+  - command: iterseg.ground_truth_from_ROI
+    display_name: ground_truth_from_ROI
