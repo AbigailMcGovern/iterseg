@@ -33,10 +33,12 @@ from dask import delayed
     loss_function={'choices': ['BCELoss', 'DiceLoss']}, 
     output_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
     scale={'widget_type' : 'LiteralEvalLineEdit'},
+    learning_rate={'widget_type' : 'LiteralEvalLineEdit'}
     )
 def train_from_viewer(
     viewer: napari.viewer.Viewer, 
     image_stack: napari.layers.Image, 
+    labels_stack: napari.layers.Labels,
     output_dir: Union[str, None]=None, 
     scale: tuple=(1, 1, 1), 
     mask_prediction='mask', 
@@ -73,7 +75,7 @@ def train_from_viewer(
     predict_labels: bool (True)
     save_labels: (True)
     '''
-    _train_from_viewer(viewer, image_stack, output_dir, scale, 
+    _train_from_viewer(viewer, image_stack, labels_stack, output_dir, scale, 
         mask_prediction, centre_prediciton, affinities_extent, training_name, 
         loss_function, learning_rate, epochs, validation_prop, n_each, predict_labels, save_labels)
 
@@ -81,6 +83,7 @@ def train_from_viewer(
 def _train_from_viewer(
     viewer: napari.viewer.Viewer, 
     image_stack: napari.layers.Image, 
+    labels_stack: napari.layers.Labels,
     output_dir: Union[str, None]=None, 
     scale: tuple=(1, 1, 1), 
     mask_prediction='mask', 
@@ -102,8 +105,12 @@ def _train_from_viewer(
         image_4D_stack = image_stack.data
     else:
         image_4D_stack = image_stack
-    assert image_4D_stack.shape == labels_4D_stack.shape
 
+    if isinstance(labels_stack, napari.layers.Labels):
+        labels_4D_stack = labels_stack.data
+    else:
+        labels_4D_stack = labels_stack
+    assert image_4D_stack.shape == labels_4D_stack.shape
     condition_name = [training_name, ]
     image_list = [image_4D_stack[i, ...] for i in range(image_4D_stack.shape[0])]
     labels_list = [labels_4D_stack[i, ...] for i in range(labels_4D_stack.shape[0])]
@@ -138,12 +145,11 @@ def _train_from_viewer(
             save_path = os.path.join(str(output_dir), training_name + '_labels-prediction.zarr')
         else:
             save_path = None
-        labels_layer = segment_data(napari_viewer=viewer, input_volume_layer=image_stack, 
-                                    save_dir= output_dir, name = f'{training_name}_labels',
-                                    segmenter='affinity-unet-watershed', network_or_config_file=u_path[0],
-                                    layer_reference= None, chunk_size=(10, 256, 256), margin=(1, 64, 64), 
-                                    debug=False)
-    
+        seg_func = segmenters['affinity-unet-watershed']
+        seg_func(napari_viewer=viewer, input_volume_layer=image_stack, save_dir=output_dir, 
+             name=f'{training_name}_labels', unet_or_config_file=u_path[0], layer_reference=None, 
+              chunk_size=(10, 256, 256), margin=(1, 64, 64), debug=False)
+        labels_layer = viewer.layers[f'{training_name}_labels']
     # Save metadata
     # -------------
     meta = {
@@ -161,7 +167,7 @@ def _train_from_viewer(
         'n_each' : n_each, 
         'labels_path' : save_path
     }
-    if isinstance(labels_layer, napari.layers.Labels):
+    if predict_labels and isinstance(labels_layer, napari.layers.Labels):
         labels_layer.metadata.update(meta)
     json_object = json.dumps(meta, indent=4)
     meta_path = os.path.join(output_dir, Path(u_path).stem + '_meta.json')
@@ -222,7 +228,7 @@ def construct_conditions_list(
     data_file={'widget_type': 'FileEdit'},
     data_type={'choices': ['individual frames', 'image stacks']},
     layer_name={'widget_type' : 'LineEdit'},
-    layer_type={'choices': ['Image', 'Labels']},
+    layer_type={'choices': ['Image', 'Labels', 'Shapes']},
     scale={'widget_type' : 'LiteralEvalLineEdit'}, 
     translate={'widget_type' : 'LiteralEvalLineEdit'}, 
 )
@@ -237,7 +243,6 @@ def load_data(
     translate: tuple =(0, 0, 0),
     split_channels: bool=False, 
     in_memory: bool=True,
-    save_stack: bool=False
     ):
     '''
     Load the data into the viewer as a stack of 3D image frames. 
@@ -281,7 +286,7 @@ def load_data(
                layer_type, data_type,
                  directory, data_file,
                 scale, translate, split_channels, 
-                in_memory, save_stack)
+                in_memory)
 
 
 def _load_data(
@@ -295,7 +300,6 @@ def _load_data(
     translate: tuple =(0, 0, 0),
     split_channels: bool=False, 
     in_memory: bool=True,
-    save_stack: bool=False
     ):
     '''
     Load the data into the viewer as a stack of 3D image frames. 
@@ -339,27 +343,45 @@ def _load_data(
         directory = str(directory)
     if data_file is not None:
         data_file = str(data_file)
-    imgs, uses_directory = read_data(directory, data_file, data_type, in_memory)
-    if imgs.ndim > 3:
-        if not split_channels:
-            add_to_scale = (1, ) * (imgs.ndim - 3)
-            add_to_translate = (0, ) * (imgs.ndim - 3)
-        else: 
-            add_to_scale = (1, ) * (imgs.ndim - 4)
-            add_to_translate = (0, ) * (imgs.ndim - 4)
-        scale = add_to_scale + scale
-        translate = add_to_translate + translate
-    if layer_type == 'Image':
-        if not split_channels:
-            napari_viewer.add_image(imgs, scale=scale, name=layer_name, translate=translate)
+    if layer_type == 'Image' or layer_type == 'Labels':
+        imgs, uses_directory = read_data(directory, data_file, data_type, in_memory)
+        if imgs.ndim > 3:
+            if not split_channels:
+                add_to_scale = (1, ) * (imgs.ndim - 3)
+                add_to_translate = (0, ) * (imgs.ndim - 3)
+            else: 
+                add_to_scale = (1, ) * (imgs.ndim - 4)
+                add_to_translate = (0, ) * (imgs.ndim - 4)
+            scale = add_to_scale + scale
+            translate = add_to_translate + translate
+        if layer_type == 'Image':
+            if not split_channels:
+                napari_viewer.add_image(imgs, scale=scale, name=layer_name, translate=translate)
+            else:
+                for i in range(imgs.shape[0]):
+                    napari_viewer.add_image(imgs[i, ...], scale=scale, name=layer_name, translate=translate)
+        if layer_type == 'Labels':
+            napari_viewer.add_labels(imgs, scale=scale, name=layer_name, translate=translate)
+    if layer_type == 'Shapes':
+        if data_file is not None:
+            shapes = read_shapes(data_file)
+        elif directory is not None:
+            files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.npy')]
+            shapes = []
+            for f in files:
+                new = read_shapes(f)
+                shapes = shapes + new
         else:
-            for i in range(imgs.shape[0]):
-                napari_viewer.add_image(imgs[i, ...], scale=scale, name=layer_name, translate=translate)
-    if layer_type == 'Labels':
-        napari_viewer.add_labels(imgs, scale=scale, name=layer_name, translate=translate)
+            raise ValueError("Please ensure you pick a file or directory to read from")
+        napari_viewer.add_shapes(shapes, scale=scale, name=layer_name, translate=translate)
 
 
+def read_shapes(data_file):
+    shapes = np.load(str(data_file), allow_pickle=False)
+    shapes = [s for s in shapes]
+    return shapes
 
+# TODO: refactor this **awful** function... you can do better
 def read_data(directory, data_file, data_type, in_memory):
     """
     When supplied with a directory that is a zarr, this function will open
@@ -391,8 +413,12 @@ def read_data(directory, data_file, data_type, in_memory):
             bool_list = [f.endswith(s) for s in possible_suf]
             if True in bool_list:
                 data_paths.append(os.path.join(directory, f))
+    # Read a zarr
+    # -----------
     if is_zarr:
         imgs = zarr.open(directory)
+    # Everything that isnt a zarr 
+    # ---------------------------
     else:
         imgs = []
         data_paths = sorted(data_paths)
@@ -403,6 +429,9 @@ def read_data(directory, data_file, data_type, in_memory):
         for p in data_paths:
             im = read_with_correct_modality(p, in_memory, lazy_imread)
             imgs.append(im)
+        imgs = correct_shape(imgs)
+        # Read in from a directory of files
+        # ---------------------------------
         if uses_directory:
             if not in_memory:
                 sample = imgs[0].compute
@@ -421,6 +450,8 @@ def read_data(directory, data_file, data_type, in_memory):
                     imgs = np.stack(imgs)
                 else:
                     imgs = da.stack(imgs)
+        # Single image - not zarr
+        # -----------------------
         else:
             if in_memory:
                 imgs = imgs[0]
@@ -456,6 +487,25 @@ def read_with_correct_modality(path, in_memory, lazy_imread):
         if path.endswith('.tif') or path.endswith('.tiff'):
             im = lazy_imread(path)
     return im
+
+
+
+def correct_shape(imgs):
+    shapes_3D = np.array([im.shape[-3:] for im in imgs])
+    shape_3D = np.max(shapes_3D, axis=0)
+    #max_size = [s == shape_3D for s in shapes_3D]
+    not_max_size = [s != shape_3D for s in shapes_3D]
+    if np.sum(not_max_size) > 0:
+        shapes = np.array([im.shape for im in imgs])
+        final_shapes = [list(s[:-3]) + list(shape_3D) for s in shapes]
+        dtype = imgs[0].dtype
+        final_imgs = [np.zeros(s, dtype=dtype) for s in final_shapes]
+        slices = [tuple([slice(0, s) for s in shape]) for shape, im in zip(shapes, imgs)]
+        for s_, img, orig in zip(slices, final_imgs, imgs):
+            img[s_] = orig
+        return final_imgs
+    else:
+        return imgs
 
 
 
@@ -539,82 +589,6 @@ def segment_data(
     seg_func(napari_viewer, input_volume_layer, save_dir, 
              name, network_or_config_file, layer_reference, 
              chunk_size, margin, debug)
-
-
-
-# -----------------------
-# Ground Truth Generation
-# -----------------------
-
-@magic_factory(
-        save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
-)
-def generate_ground_truth(
-    napari_veiwer: napari.Viewer,
-    labels_to_correct: napari.layers.Labels, 
-    new_layer_name: Union[str, None] = None, 
-    save_dir: Union[str, None]= None,
-    save_name: Union[str, None]= None,
-    frame_index: Union[int, None]= None,
-):  
-    """
-    Generate a new zarr file for ground truth + open with tensorstore. 
-    Tensorstore is apparently a bit faster than zarr when you correct 
-    a zarr image. 
-
-    Parameters
-    ----------
-    napari_veiwer: napari.Viewer
-        The napari viewer - this is automatically passed to magicgui.
-    labels_to_correct: napari.layers.Labels 
-        This is the labels layer you want to base your ground truth on. 
-    new_layer_name: str (None) 
-        The name of the layer you are going to create. 
-    save_dir: str (None)
-        The directory into which you want to save the ground truth 
-        file you are working on. 
-    save_name: str (None)
-        The save_name you want to use. If None, will use new_layer_name.
-    frame_index: int or None (None)
-        If None, the whole labels layer will be used to create the file. 
-        If an integer, only that frame (see the number on the slider at
-        the right hand side of napari) will be saved.
-    """
-    assert new_layer_name is not None, "Please choose a layer name"
-    assert save_dir is not None, "Please choose a directory to save the ground truth you want to work on to"
-    #assert save_name is not None, "Please choose a save name"
-    if save_name is None:
-        save_name = new_layer_name
-    if frame_index is None:
-        new_labels = labels_to_correct.data
-    else:
-        new_labels = labels_to_correct.data[frame_index, ...]
-    chunks = (1, ) + tuple(new_labels.shape[1:])
-    labels = zarr.zeros_like(new_labels, chunks=chunks)
-    labels[:] = new_labels
-    save_path = os.path.join(str(save_dir), str(save_name) + '.zarr')
-    zarr.save(save_path, labels)
-    #spec = {
-    #     'driver': 'zarr',
-    #     'kvstore': {
-    #         'driver': 'file',
-    #         'path': save_path,
-    #     },
-    #    # 'metadata' : {
-    #    #     'dataType': str(labels.dtype),
-    #    #     'dimensions': list(labels.shape),
-    #    #     'blockSize': list(chunks),
-    #    # },
-    #     'create': False,
-    #     'delete_existing': False,
-    # }
-    #labels = ts.open(spec)
-    labels = zarr.open(save_path, 'r+')
-    napari_veiwer.add_labels(
-        labels, 
-        name=new_layer_name, 
-        scale=labels_to_correct.scale, 
-        translate=labels_to_correct.translate)
 
 
 # --------------
@@ -1067,29 +1041,265 @@ def save_frames(
         layer: napari.layers.Layer,
         save_dir: Union[str, None]=None,
         save_name: Union[str, None]=None,
-        frames: Union[tuple, int]=None, 
+        frames: Union[tuple, int]=None,
         save_as_stack: bool=True,
+        load_saved: bool=False, 
+        load_name: Union[str, None]=None,
     ):
+    '''
+    Save data from frames
+
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+    layer: napari.layers.Layer
+        The layer to save data from. Supported layers include:
+        Image, Labels, Shapes, and Points. 
+    save_dir: str
+        The directory into which to save the data
+    save_name:
+        The name you want to use to save the data. This doesn't 
+        need an extension. If a labels or image layer, data will
+        be saved as a zarr file. If a shapes or points layer, 
+        data will be saved as a npy file. 
+    frames: tuple or None
+        The frames you want to save (in brackets like so: (0, 2, 3))
+        or None. If None, the whole layer will be saved. This will 
+        only work for Labels and Image layers. All frames will always
+        be saved for Points and Shapes layers. 
+    
+    '''
     #if isinstance() # check if dask array
-    if isinstance(frames, tuple):
-        slices = [slice(f, f+1) for f in frames]
-        data = [layer.data[s] for s in slices]
-        if save_as_stack:
-            data = np.stack(data)
+    if isinstance(layer, napari.layers.Image) or isinstance(layer, napari.layers.Labels):
+        if isinstance(frames, tuple):
+            slices = [slice(f, f+1) for f in frames]
+            data = [layer.data[s] for s in slices]
+            if save_as_stack:
+                data = np.stack(data)
+                data = np.squeeze(data)
+                sp = os.path.join(str(save_dir), save_name + '.zarr')
+                zarr.save(sp, data)
+                if load_saved:
+                    loaded = zarr.open(sp)
+                    if isinstance(layer, napari.layers.Image):
+                        napari_viewer.add_image(loaded)
+            else:
+                for f, d in zip(frames, data):
+                    sn = f'{save_name}_f{f}'
+                    sp = os.path.join(str(save_dir), sn + '.zarr')
+                    zarr.save(sp, d)
+        if frames is None:
             sp = os.path.join(str(save_dir), save_name + '.zarr')
-            zarr.save(sp, data)
+            zarr.save(sp, layer.data)
+    elif isinstance(layer, napari.layers.Shapes):
+        #TODO add shapes saving capabilities for ROIs
+        data = layer.data
+        data = np.stack(data)
+        sp = os.path.join(str(save_dir), save_name + '.npy')
+        np.save(sp, data, allow_pickle=False)
+    elif isinstance(layer, napari.layers.Points):
+        data = layer.data
+        sp = os.path.join(str(save_dir), save_name + '.npy')
+        np.save(sp, data, allow_pickle=False)
+    load_saved_data(load_saved, napari_viewer, frames, layer, sp, load_name)
+            
+
+
+def load_saved_data(load_saved, napari_viewer, frames, layer, sp, load_name):
+    if load_saved:
+        if isinstance(layer, napari.layers.Image) or isinstance(layer, napari.layers.Labels):
+            loaded = zarr.open(sp)
+        elif isinstance(layer, napari.layers.Shapes) or isinstance(layer, napari.layers.Points):
+            loaded = np.load(sp, allow_pickle=False)
+        if load_name is None:
+            fstr = '-'.join([str(f) for f in frames])
+            load_name = f'{layer.name}_f{fstr}'
+        if layer.ndim != loaded.ndim:
+            diff = layer.ndim - loaded.ndim
+            take_from = diff - layer.ndim
+            scale = layer.scale[take_from:]
         else:
-            for f, d in zip(frames, data):
-                sn = f'{save_name}_f{f}'
-                sp = os.path.join(str(save_dir), sn + '.zarr')
-                zarr.save(sp, d)
+            scale = layer.scale
+        if isinstance(layer, napari.layers.Image):
+            napari_viewer.add_image(loaded, name=load_name, scale=scale)
+        elif isinstance(layer, napari.layers.Labels):
+            napari_viewer.add_labels(loaded, name=load_name, scale=scale)
+        elif isinstance(layer, napari.layers.Shapes):
+            napari_viewer.add_shapes(loaded, name=load_name, scale=scale)
+        elif isinstance(layer, napari.layers.Points):
+            napari_viewer.add_points(loaded, name=load_name, scale=scale)
 
 
 
+# --------------------
+# Generate GT from ROI
+# --------------------
+
+@magic_factory(
+    save_dir={'widget_type': 'FileEdit', 'mode' : 'd'}, 
+)
+def ground_truth_from_ROI(
+        napari_viewer: napari.Viewer, 
+        image_layer: napari.layers.Image,
+        labels_layer: napari.layers.Labels,
+        shapes_layer: napari.layers.Shapes, 
+        save_dir: Union[str, None]=None, 
+        name: str='gt-from-ROI',
+        number_of_tiles: int=1,
+        padding: int=2
+    ):
+    '''
+    Generate a ground truth image for training using
+    several proofread ROIs.
+
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+        The napari viewer. This is passed in automatically. 
+    labels_layer: napari.layers.Labels
+        The labels layer you want tp create ground truth from.
+    shapes_layer: napari.layers.Shapes
+        The shapes layer you want to use to find the ROIs. 
+        At present, the shapes are treated as rectangles 
+        across the xy plane. We will use the entire z axis.
+    save_dir: str or None
+        Folder to save data to. If this is not None, the data will
+        be saved as a zarr file and the data will be opened into a 
+        new layer. This means you can continue to proofread and this
+        will be saved. 
+    name: str='gt-from-ROI'
+        Name that will be used for the output layer and for the save
+        file. Note that this does not require a file extension. 
+    number_of_tiles: int (1)
+        The number of times each ROI will be repeated. Each will be saved 
+        into its own frame and tiled as many times as specified. Note that
+        if the number specifed is greater than the maximum times it fits
+        into the frame, the number of tiles will be set to the maximum.
+    padding: int (2)
+        The number of pixels padding between each tile in the x and y axes. 
+    '''
+    _ground_truth_from_ROI(napari_viewer, image_layer, labels_layer, shapes_layer, 
+                           save_dir, name, number_of_tiles, padding)
 
 
+def _ground_truth_from_ROI(
+        napari_viewer: napari.Viewer, 
+        image_layer: napari.layers.Image, # TODO:save the image also with background noise
+        labels_layer: napari.layers.Labels,
+        shapes_layer: napari.layers.Shapes, 
+        save_dir: Union[str, None]=None, 
+        name: str='gt-from-ROI',
+        number_of_tiles: int=1,
+        padding: int=2
+    ):
+    '''
+    Generate a ground truth image for training using
+    several proofread ROIs.
 
-
+    Parameters
+    ----------
+    napari_viewer: napari.Viewer
+        The napari viewer. This is passed in automatically. 
+    labels_layer: napari.layers.Labels
+        The labels layer you want tp create ground truth from.
+    shapes_layer: napari.layers.Shapes
+        The shapes layer you want to use to find the ROIs. 
+        At present, the shapes are treated as rectangles 
+        across the xy plane. We will use the entire z axis.
+    save_dir: str or None
+        Folder to save data to. If this is not None, the data will
+        be saved as a zarr file and the data will be opened into a 
+        new layer. This means you can continue to proofread and this
+        will be saved. 
+    name: str='gt-from-ROI'
+        Name that will be used for the output layer and for the save
+        file. Note that this does not require a file extension. 
+    number_of_tiles: int (1)
+        The number of times each ROI will be repeated. Each will be saved 
+        into its own frame and tiled as many times as specified. Note that
+        if the number specifed is greater than the maximum times it fits
+        into the frame, the number of tiles will be set to the maximum.
+    padding: int (2)
+        The number of pixels padding between each tile in the x and y axes. 
+    '''
+    gt = labels_layer.data
+    img = image_layer.data
+    rois = shapes_layer.data
+    max_lim = [np.round(np.max(roi, axis=0)).astype(int) + 1 for roi in rois]
+    min_lim = [np.round(np.min(roi, axis=0)).astype(int) for roi in rois]
+    # Get the ROI labels
+    # ------------------
+    extra_dims = gt.ndim - 3
+    slices = []
+    for ll, ul in zip(min_lim, max_lim):
+        s_xy = [slice(ll[i], ul[i]) for i in range(extra_dims + 1, gt.ndim)]
+        s_z = [slice(None), ]
+        s_extra = [slice(ll[i], ul[i]) for i in range(0, extra_dims)] * extra_dims 
+        s = s_extra + s_z + s_xy
+        s = tuple(s)
+        slices.append(s)
+    gt_rois = [gt[s_] for s_ in slices]
+    im_rois = [img[s_] for s_ in slices]
+    # Tile the ROIs as specified
+    # --------------------------
+    gt_xy_shape = gt.shape[-2:]
+    max_per_axis = []
+    max_per_axis = [np.floor_divide(gt_xy_shape, 
+                        np.array(d.shape[-2:]) + padding).astype(int) \
+                            for d in gt_rois]
+    max_total = [mpa[0] * mpa[1] for mpa in max_per_axis]
+    mod_per_axis = [np.mod(gt_xy_shape, 
+                        (np.array(d.shape[-2:]) + padding)).astype(int) \
+                            for d in gt_rois]
+    final_gt_data = []
+    final_im_data = []
+    gt_3D_shape = gt.shape[-3:]
+    for i, gt_roi in enumerate(gt_rois):
+        mt = max_total[i]
+        if number_of_tiles < mt:
+            mt = number_of_tiles # we wont go past the max possible
+        mapa = max_per_axis[i]
+        y1 = gt_roi.shape[-2]
+        x1 = gt_roi.shape[-1]
+        slices = []
+        for j in range(0, mt):
+            # TODO add image and random background noise
+            x_multi_factor = j % mapa[-1] + 1
+            y_multi_factor = np.floor_divide(j, mapa[-1]) + 1
+            px = (padding * x_multi_factor) - padding
+            py = (padding * y_multi_factor) - padding
+            _y1 = y1 * y_multi_factor + py
+            _x1 = x1 * x_multi_factor + px
+            y0 = _y1 - y1
+            x0 = _x1 - x1
+            s = (slice(None), slice(y0, _y1), slice(x0, _x1))
+            slices.append(s)
+        new_gt_frame = np.zeros(gt_3D_shape, dtype=gt.dtype)
+        new_im_frame = np.random.normal(img.mean(), size=gt_3D_shape)
+        #np.zeros(gt_3D_shape, dtype=img.dtype)
+        for s in slices:
+            new_gt_frame[s] = gt_roi
+            new_im_frame[s] = im_rois[i]
+        final_gt_data.append(new_gt_frame)
+        final_im_data.append(new_im_frame)
+    final_gt_data = np.stack(final_gt_data)
+    final_im_data = np.stack(final_im_data)
+    # Save if appropriate
+    # -------------------
+    if save_dir is not None:
+        sp_l = os.path.join(save_dir, name + '_labels.zarr')
+        zarr.save(sp_l, final_gt_data)
+        sp_i = os.path.join(save_dir, name + '_img.zarr')
+        zarr.save(sp_i, final_im_data)
+        final_gt_data = zarr.open(sp_l)
+        final_im_data = zarr.open(sp_i)
+    # Add to viewer
+    # -------------
+    napari_viewer.add_image(final_im_data, scale=labels_layer.scale, 
+                         translate=labels_layer.translate, name=name + '_img')
+    napari_viewer.add_labels(final_gt_data, scale=labels_layer.scale, 
+                         translate=labels_layer.translate, name=name + '_labels')
+  
 
 # ----------------
 # Helper Functions
