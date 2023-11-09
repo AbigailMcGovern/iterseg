@@ -1070,6 +1070,8 @@ def save_frames(
     
     '''
     #if isinstance() # check if dask array
+    if isinstance(frames, int):
+        frames = (frames, )
     if isinstance(layer, napari.layers.Image) or isinstance(layer, napari.layers.Labels):
         if isinstance(frames, tuple):
             slices = [slice(f, f+1) for f in frames]
@@ -1079,18 +1081,21 @@ def save_frames(
                 data = np.squeeze(data)
                 sp = os.path.join(str(save_dir), save_name + '.zarr')
                 zarr.save(sp, data)
-                if load_saved:
-                    loaded = zarr.open(sp)
-                    if isinstance(layer, napari.layers.Image):
-                        napari_viewer.add_image(loaded)
             else:
                 for f, d in zip(frames, data):
                     sn = f'{save_name}_f{f}'
                     sp = os.path.join(str(save_dir), sn + '.zarr')
                     zarr.save(sp, d)
         if frames is None:
-            sp = os.path.join(str(save_dir), save_name + '.zarr')
-            zarr.save(sp, layer.data)
+            if save_as_stack:
+                sp = os.path.join(str(save_dir), save_name + '.zarr')
+                data = np.squeeze(layer.data)
+                zarr.save(sp, data)
+            else:
+                for f in layer.data.shape[0]:
+                    sn = f'{save_name}_f{f}'
+                    sp = os.path.join(str(save_dir), sn + '.zarr')
+                    zarr.save(sp, layer.data[f, ...])
     elif isinstance(layer, napari.layers.Shapes):
         #TODO add shapes saving capabilities for ROIs
         data = layer.data
