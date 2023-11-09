@@ -561,6 +561,7 @@ def comparison_plots(
     matplotlib.rcParams.update({'font.size': font_size})
     sns.set_context(context)
     sns.set_style(style)
+    plt.rcParams['svg.fonttype'] = 'none' # so the text will be saved with the svg - not curves
     is_int = []
     if variation_of_information:
         is_int.append(isinstance(VI_indexs[0], int))
