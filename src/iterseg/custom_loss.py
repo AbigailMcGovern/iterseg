@@ -328,7 +328,7 @@ class CentroidLoss(nn.Module):
         
         # Prep, because flat is easier
         block_shape = [s for s in inputs.shape[-3:]]
-        block_shape = tuple(shape)
+        block_shape = tuple(block_shape)
         inputs, targets = flatten_channels(inputs, targets, self.channel_dim)
 
         # -----------------------
@@ -388,17 +388,17 @@ class CentroidLoss(nn.Module):
 
         euclid_dists = self.euclidian_distances()
         weights = euclid_dists - 1
-        centroids = np.argwhere(np_targets == 1.)
+        centroids = np.argwhere(targets == 1.)
         score = 0
         for c in centroids:
-            max_ind = np.inputs.shape[-1]
+            max_ind = inputs.shape[-1]
             raveled_indices = c + offsets
             in_bounds_indices = np.array([idx for idx in raveled_indices \
                                             if idx >= 0 and idx < max_ind])
-            neighbors = np_inputs[in_bounds_indices]
+            neighbors = inputs[in_bounds_indices]
             weighted = neighbors * weights
             score += weighted.mean()
-        return mean
+        return score
 
 
     def euclidian_distances(self):

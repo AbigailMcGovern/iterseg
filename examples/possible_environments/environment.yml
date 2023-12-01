@@ -19,5 +19,5 @@ dependencies:
     #- platelet-unet-watershed
     - tensorstore
     - zarpaint
-    - git+https://github.com/pog87/PtitPrince.git
+    #- git+https://github.com/pog87/PtitPrince.git # 
     - git+https://github.com/AbigailMcGovern/unet_segmentation_metrics.git

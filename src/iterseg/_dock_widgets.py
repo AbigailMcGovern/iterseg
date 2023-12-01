@@ -110,7 +110,15 @@ def _train_from_viewer(
         labels_4D_stack = labels_stack.data
     else:
         labels_4D_stack = labels_stack
+    # in case there is an accidental extra dim
+    image_4D_stack = np.squeeze(image_4D_stack)
+    labels_4D_stack = np.squeeze(labels_4D_stack)
+    # make sure the image and gt are the same shape
     assert image_4D_stack.shape == labels_4D_stack.shape
+    # if the image is 3D convert to 4D
+    if image_4D_stack.ndim == 3:
+        image_4D_stack = image_4D_stack[np.newaxis, :, :, :]
+        labels_4D_stack = labels_4D_stack[np.newaxis, :, :, :]
     condition_name = [training_name, ]
     image_list = [image_4D_stack[i, ...] for i in range(image_4D_stack.shape[0])]
     labels_list = [labels_4D_stack[i, ...] for i in range(labels_4D_stack.shape[0])]
@@ -170,7 +178,7 @@ def _train_from_viewer(
     if predict_labels and isinstance(labels_layer, napari.layers.Labels):
         labels_layer.metadata.update(meta)
     json_object = json.dumps(meta, indent=4)
-    meta_path = os.path.join(output_dir, Path(u_path).stem + '_meta.json')
+    meta_path = os.path.join(output_dir, Path(u_path[0]).stem + '_meta.json')
     with open(meta_path, "w") as outfile:
         outfile.write(json_object)
 
@@ -491,6 +499,7 @@ def read_with_correct_modality(path, in_memory, lazy_imread):
 
 
 def correct_shape(imgs):
+    imgs = [np.squeeze(img) for img in imgs]
     shapes_3D = np.array([im.shape[-3:] for im in imgs])
     shape_3D = np.max(shapes_3D, axis=0)
     #max_size = [s == shape_3D for s in shapes_3D]
@@ -1288,7 +1297,9 @@ def _ground_truth_from_ROI(
         final_gt_data.append(new_gt_frame)
         final_im_data.append(new_im_frame)
     final_gt_data = np.stack(final_gt_data)
+    final_gt_data = np.squeeze(final_gt_data)
     final_im_data = np.stack(final_im_data)
+    final_im_data = np.squeeze(final_im_data)
     # Save if appropriate
     # -------------------
     if save_dir is not None:

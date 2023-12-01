@@ -4,7 +4,7 @@ import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
-import ptitprince as pt
+#import ptitprince as pt
 import seaborn as sns
 from typing import Union
 import matplotlib
@@ -186,8 +186,12 @@ def VI_plot(
     if ax is None:
         f, ax = plt.subplots(figsize=(8, 6))
     
-    pt.RainCloud(x=x, y=y, data=data, palette=palette, bw=sigma,
-                 width_viol=.6, ax=ax, orient=orient)
+    sns.boxplot(x=x, y=y, data=data, palette=palette, ax=ax)
+    sns.stripplot(x=x, y=y, data=data, palette=palette, edgecolor="white", ax=ax,
+                 size=3, jitter=1, zorder=0, orient=orient,  dodge=True, linewidth=0.3)
+    sns.boxplot()
+    #pt.RainCloud(x=x, y=y, data=data, palette=palette, bw=sigma,
+    #             width_viol=.6, ax=ax, orient=orient)
     p = Path(save)
     if title:
         plt.title(p.stem)
@@ -211,13 +215,19 @@ def VI_plot_compare(
             sigma=0.2,
             name='model_name',
             ):
-    pt.RainCloud(x=name, y=cond_ent_over, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
-                 width_viol=.6, ax=ax0, orient=orient, alpha=0.8, move=0.3)
+    sns.boxplot(x=name, y=cond_ent_over, data=df, palette=palette, ax=ax0)
+    sns.stripplot(x=name, y=cond_ent_over, data=df, palette=palette, edgecolor="white", ax=ax0,
+                 size=3, jitter=1, zorder=0, orient=orient,  dodge=True, linewidth=0.3)
+    #pt.RainCloud(x=name, y=cond_ent_over, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
+     #            width_viol=.6, ax=ax0, orient=orient, alpha=0.8, move=0.3)
     ax0.set_ylabel(comparison_name)
     sns.despine(ax=ax0)
     ax0.legend([],[], frameon=False)
-    pt.RainCloud(x=name, y=cond_ent_under, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
-                 width_viol=.6, ax=ax1, orient=orient, alpha=0.8, move=0.3)
+    sns.boxplot(x=name, y=cond_ent_under, data=df, palette=palette, ax=ax1)
+    sns.stripplot(x=name, y=cond_ent_under, data=df, palette=palette, edgecolor="white", ax=ax1,
+                 size=3, jitter=1, zorder=0, orient=orient,  dodge=True, linewidth=0.3)
+    #pt.RainCloud(x=name, y=cond_ent_under, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
+    #             width_viol=.6, ax=ax1, orient=orient, alpha=0.8, move=0.3)
     ax1.set_ylabel(comparison_name)
     sns.despine(ax=ax1)
     ax1.legend([],[], frameon=False)
@@ -255,11 +265,17 @@ def experiment_VI_plots(
     f, axs = plt.subplots(1, 2, figsize=(8, 6)) #, sharex=True) #, sharey=True)
     ax0 = axs[0]
     ax1 = axs[1]
-    pt.RainCloud(x = x, y = cond_ent_over, data = data, palette = pal, bw = sigma,
-                 width_viol = .6, ax = ax0, orient = o, move=0.3)
+    sns.boxplot(x=x, y=cond_ent_over, data=data, palette=pal, ax=ax0)
+    sns.stripplot(x=x, y=cond_ent_over, data=data, palette=pal, edgecolor="white", ax=ax0,
+                 size=3, jitter=1, zorder=0, orient=o, dodge=True, linewidth=0.3)
+    #pt.RainCloud(x = x, y = cond_ent_over, data = data, palette = pal, bw = sigma,
+    #             width_viol = .6, ax = ax0, orient = o, move=0.3)
     ax0.set_title('Over-segmentation conditional entropy')
-    pt.RainCloud(x = x, y = cond_ent_under, data = data, palette = pal, bw = sigma,
-                 width_viol = .6, ax = ax1, orient = o, move=0.3)
+    sns.boxplot(x=x, y=cond_ent_under, data=data, palette=pal, ax=ax0)
+    sns.stripplot(x=x, y=cond_ent_under, data=data, palette=pal, edgecolor="white", ax=ax0,
+                 size=3, jitter=1, zorder=0, orient=o, dodge=True, linewidth=0.3)
+    #pt.RainCloud(x = x, y = cond_ent_under, data = data, palette = pal, bw = sigma,
+    #             width_viol = .6, ax = ax1, orient = o, move=0.3)
     ax1.set_title('Under-segmentation conditional entropy')
     f.suptitle(title)
     os.makedirs(out_dir, exist_ok=True)
@@ -325,8 +341,11 @@ def plot_experiment_no_diff(paths, names, title, out_dir, out_name, col_name='n_
     pal = 'Set2'
     sigma = .2
     f, ax = plt.subplots(figsize=(10, 10))
-    pt.RainCloud(x=x, y='n_diff', data=data, palette=pal, bw=sigma,
-                 width_viol=.6, ax=ax, orient=o)
+    sns.boxplot(x=x, y='n_diff', data=data, palette=pal, ax=ax)
+    sns.stripplot(x=x, y='n_diff', data=data, palette=pal, edgecolor="white", ax=ax,
+                 size=3, jitter=1, zorder=0, orient=o, dodge=True, linewidth=0.3)
+    #pt.RainCloud(x=x, y='n_diff', data=data, palette=pal, bw=sigma,
+    #             width_viol=.6, ax=ax, orient=o)
     plt.title(title)
     f.savefig(out_path)
     if show:
@@ -357,8 +376,11 @@ def plot_count_difference(
     pal = 'Set2'
     sigma = .2
     f, ax = plt.subplots(figsize=(10, 10))
-    pt.RainCloud(x=x, y='n_diff', data=data, palette=pal, bw=sigma,
-                 width_viol=.6, ax=ax, orient=o)
+    sns.boxplot(x=x, y='n_diff', data=data, palette=pal, ax=ax)
+    sns.stripplot(x=x, y='n_diff', data=data, palette=pal, edgecolor="white", ax=ax,
+                 size=3, jitter=1, zorder=0, orient=o, dodge=True, linewidth=0.3)
+    #pt.RainCloud(x=x, y='n_diff', data=data, palette=pal, bw=sigma,
+     #            width_viol=.6, ax=ax, orient=o)
     plt.title(title)
     f.savefig(out_path)
     if show:
@@ -378,8 +400,11 @@ def compare_count_difference(
         name='model_name',
         ):
     conditions = pd.unique(df[name])
-    pt.RainCloud(x=name, y=col_name, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
-                 width_viol=.6, ax=ax, orient=orient, alpha=0.8, move=0.3)
+    sns.boxplot(x=name, y=col_name, data=df, palette=palette, ax=ax)
+    sns.stripplot(x=name, y=col_name, data=df, palette=palette, edgecolor="white", ax=ax,
+                 size=3, jitter=1, zorder=0, orient=orient, dodge=True, linewidth=0.3)
+    #pt.RainCloud(x=name, y=col_name, hue=name, hue_order=conditions, data=df, palette=palette, bw=sigma,
+    #             width_viol=.6, ax=ax, orient=orient, alpha=0.8, move=0.3)
     ax.set_ylabel(comparison_name)
     sns.despine(ax=ax)
     ax.legend([],[], frameon=False)

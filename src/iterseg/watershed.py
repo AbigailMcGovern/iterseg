@@ -92,7 +92,7 @@ def _indices_to_raveled_affinities(image_shape, selem, centre):
     return indices
 
 
-@numba.jit(cache=True)
+@numba.jit(cache=True, nopython=False)
 def raveled_affinity_watershed(
         image_raveled, marker_coords, offsets, mask, output
         ):

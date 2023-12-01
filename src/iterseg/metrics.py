@@ -11,7 +11,7 @@ from .plots import VI_plot, plot_AP, plot_count_difference
 import pandas as pd
 from skimage.measure import regionprops
 from skimage.metrics import variation_of_information
-import umetrics
+import umetrix
 
 import napari
 from scipy import stats
@@ -205,7 +205,7 @@ def generate_IoU_dict(thresholds=(0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.
 
 def generate_IoU_data(gt, seg, IoU_dict, thresholds=(0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9)):
     for t in thresholds:
-        result = umetrics.calculate(gt, seg, strict=True, iou_threshold=t)
+        result = umetrix.calculate(gt, seg, strict=True, iou_threshold=t)
         n = f't{t}_true_positives'
         IoU_dict[n].append(result.n_true_positives) 
         n = f't{t}_false_positives'
