@@ -9,7 +9,6 @@ import zarr
 from skimage.io import imread
 import os
 from .metrics import get_accuracy_metrics, plot_accuracy_metrics
-import tensorstore as ts
 from .plots import comparison_plots
 from typing import Union
 import json
