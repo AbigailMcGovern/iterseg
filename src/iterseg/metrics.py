@@ -1,4 +1,3 @@
-from tkinter import Y
 from matplotlib.colors import same_color
 import matplotlib.pyplot as plt
 import pandas as pd

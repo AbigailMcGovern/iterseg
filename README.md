@@ -7,7 +7,7 @@
 [![codecov](https://codecov.io/gh/abigailmcgovern/iterseg/branch/main/graph/badge.svg)](https://codecov.io/gh/abigailmcgovern/iterseg)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/iterseg)](https://napari-hub.org/plugins/iterseg)
 
-napari plugin for iteratively improving unet-watershed segmentation
+napari plugin for iteratively improving a deep learning-based unet-watershed segmentation. 
 
 ----------------------------------
 
@@ -22,24 +22,11 @@ https://napari.org/docs/plugins/index.html
 -->
 
 ## Installation
-
-### Installing iterseg in an environment
-We recommend that you install iterseg with the conda/mamba environment we provide in this repository. Ensure you have [mamba](https://mamba.readthedocs.io/en/latest/mamba-installation.html#mamba-install) or [conda](https://conda.io/projects/conda/en/latest/user-guide/install/index.html) installed and also have [git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) installed. 
-
-To install `iterseg` in editable mode with our environment:
+Install iterseg using pip. Assuming you have python and pip installed (e.g., via miniconda), you can install iterseg with only one line, typed into terminal (MacOS/Linux) or annaconda prompt (Windows). We recomend installing into a [new environment](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#) as some of our dependencies may not play well in the sandpit with certain versions of packages that may exist in a prexisting one. 
 
 ```bash
-cd path/to/directory/into/which/you/want/to/download/files
-git clone https://github.com/abigailmcgovern/iterseg.git
-cd iterseg
-conda env create --file environment.yml # respond y to prompts. If mamba is installed used mamba not conda. 
-pip install -e .
+pip install iterseg
 ```
-
-### Installing iterseg alone
-`iterseg` is not yet available via `pip`, but this will hopefully change very soon. You can intstall the development version by itself, but you may miss some key dependencies. To install latest development version of `iterseg`:
-
-    pip install git+https://github.com/abigailmcgovern/iterseg.git
 
 
 ## Opening iterseg
