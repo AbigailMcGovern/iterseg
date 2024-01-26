@@ -3,8 +3,6 @@
 [![License](https://img.shields.io/pypi/l/iterseg.svg?color=green)](https://github.com/abigailmcgovern/iterseg/raw/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/iterseg.svg?color=green)](https://pypi.org/project/iterseg)
 [![Python Version](https://img.shields.io/pypi/pyversions/iterseg.svg?color=green)](https://python.org)
-[![tests](https://github.com/abigailmcgovern/iterseg/workflows/tests/badge.svg)](https://github.com/abigailmcgovern/iterseg/actions)
-[![codecov](https://codecov.io/gh/abigailmcgovern/iterseg/branch/main/graph/badge.svg)](https://codecov.io/gh/abigailmcgovern/iterseg)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/iterseg)](https://napari-hub.org/plugins/iterseg)
 
 napari plugin for iteratively improving a deep learning-based unet-watershed segmentation. 
