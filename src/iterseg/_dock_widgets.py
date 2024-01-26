@@ -423,7 +423,11 @@ def read_data(directory, data_file, data_type, in_memory):
     # Read a zarr
     # -----------
     if is_zarr:
-        imgs = zarr.open(directory)
+        if directory.endswith('.ome.zarr'):
+            p = os.path.join(directory, '0')
+            imgs = zarr.open(p)
+        else:
+            imgs = zarr.open(directory)
     # Everything that isnt a zarr 
     # ---------------------------
     else:
@@ -487,6 +491,10 @@ def read_with_correct_modality(path, in_memory, lazy_imread):
     if in_memory:
         if path.endswith('.tif') or path.endswith('.tiff'):
             im = imread(path)
+        elif path.endswith('.ome.zarr'):
+            p = os.path.join(path, '0')
+            im = zarr.creation.open_array(p, 'r')
+            im = np.array(im)
         elif path.endswith('.zar') or path.endswith('.zarr'):
             im = zarr.creation.open_array(path, 'r')
             im = np.array(im)
