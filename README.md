@@ -25,7 +25,7 @@ https://napari.org/docs/plugins/index.html
 Install iterseg using pip. Assuming you have python and pip installed (e.g., via miniconda), you can install iterseg with only one line, typed into terminal (MacOS/Linux) or annaconda prompt (Windows). We recomend installing into a [new environment](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#) as some of our dependencies may not play well in the sandpit with certain versions of packages that may exist in a prexisting one. 
 
 ```bash
-pip install iterseg
+pip install iterseg napari
 ```
 
 
