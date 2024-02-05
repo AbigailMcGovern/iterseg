@@ -19,7 +19,7 @@ from . import watershed as ws
 IGNORE_CUDA = False
 
 DEFAULT_UNET_PATH = os.path.join(
-            os.path.dirname(__file__), 'data/211309_151717_unet_z-1_y-1_x-1_m_c.pt'
+            os.path.dirname(__file__), 'data/232208_161159_plateseg.pt'
             )
 
 def load_unet(u_state_fn=DEFAULT_UNET_PATH):
