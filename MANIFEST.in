@@ -5,4 +5,4 @@ include requirements.txt
 recursive-exclude * __pycache__
 recursive-exclude * *.py[co]
 
-graft iterseg/data
+graft src/iterseg/data
