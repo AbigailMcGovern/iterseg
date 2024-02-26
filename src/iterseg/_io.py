@@ -68,8 +68,10 @@ def ome_to_napari(ome_meta: dict) -> tuple[dict, str]:
 
 def _get_scale(ome_meta):
     axes = ome_meta['multiscales'][0]['axes']
-    ndim = len(axes)
-    default_scale = np.ones(ndim)
+    non_channel_axes = [i for i, ax in enumerate(axes)
+                        if ax['type'] != 'channel']
+    full_ndim = len(axes)  # including channel — we'll subset later
+    default_scale = np.ones(full_ndim)
     dataset_dict = ome_meta['multiscales'][0]['datasets'][0]
     if 'coordinateTransformations' in dataset_dict:
         scales = [d['scale']
@@ -81,26 +83,27 @@ def _get_scale(ome_meta):
             scale = default_scale
     else:
         scale = default_scale
-    return scale
+    return scale[non_channel_axes]
 
 
 def _get_translate(ome_meta):
     axes = ome_meta['multiscales'][0]['axes']
-    ndim = len(axes)
-    default_translate = np.zeros(ndim)
+    non_channel_axes = [i for i, ax in enumerate(axes)
+                        if ax['type'] != 'channel']
+    full_ndim = len(axes)  # including channel — we'll subset later
+    default_translate = np.zeros(full_ndim)
     dataset_dict = ome_meta['multiscales'][0]['datasets'][0]
     if 'coordinateTransformations' in dataset_dict:
         translates = [d['translation']
                       for d in dataset_dict['coordinateTransformations']
                       if d['type'] == 'translation']
-        translate = np.add.reduce(translates)
         if len(translates) > 0:
             translate = np.add.reduce(translates)
         else:
             translate = default_translate
     else:
         translate = default_translate
-    return translate
+    return translate[non_channel_axes]
 
 
 def _get_contrast(ome_meta):
