@@ -177,13 +177,11 @@ def _unwrap(arglist, channel_axis):
 
 def _ome_to_napari_meta_image(ome_meta: dict) -> dict:
     metadata = {'axes': ome_meta['multiscales'][0]['axes']}
-    print(f"{metadata['axes']=}")
     try:
         channel_axis = [i for i, ax in enumerate(metadata['axes'])
                         if ax['type'] == 'channel'][0]
     except IndexError:
         channel_axis = None
-    print(f'{channel_axis=}')
     scale = _get_scale(ome_meta)
     translate = _get_translate(ome_meta)
     contrast_limits, contrast_range = _get_contrast(ome_meta)
