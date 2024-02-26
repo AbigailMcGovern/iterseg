@@ -23,6 +23,14 @@ contributions:
   - id: iterseg.ground_truth_from_ROI
     title: Create ground_truth_from_ROI
     python_name: iterseg._dock_widgets:ground_truth_from_ROI
+  - id: iterseg.load_ome_zarr
+    title: Load an OME-Zarr image or labels image
+    python_name: iterseg._io:get_napari_reader
+  readers:
+  - command: iterseg.load_ome_zarr
+    filename_patterns:
+    - '*.ome.zarr'
+    accepts_directories: true
   widgets:
   - command: iterseg.train_from_viewer
     display_name: train_from_viewer
