@@ -25,7 +25,16 @@ def _tensorstore_or_dask(zarr_path):
 
 
 def load_ome_zarr(path: pathlib.Path | str):
-    """Read image and OME metadata from path."""
+    """Read image and OME metadata from path.
+
+    This function will load an ome-zarr v0.4 image or labels.
+
+    The image will be a dask or tensorstore array, while labels will be
+    either a zarr or a tensorstore array. (Tensorstore is optional.)
+
+    Because napari can't paint into multiscale data, only the highest
+    resolution level of a labels zarr is loaded.
+    """
     path = pathlib.Path(path)  # just use the thing regardless of input
     metadata_dict = ome_metadata(path)
     layer_meta, layer_type = ome_to_napari(metadata_dict)
@@ -42,22 +51,42 @@ def load_ome_zarr(path: pathlib.Path | str):
 
 
 def get_napari_reader(path):
+    """Return `load_ome_zarr` if the file has the correct extension."""
     if path.endswith('ome.zarr'):
         return load_ome_zarr
     return None
 
 
 def ome_metadata(path: pathlib.Path) -> dict:
-    """Load OME v0.4 metadata from a directory."""
+    """Load OME v0.4 metadata from a directory.
+
+    This uses ome-zarr to load the json dictionary from .zattrs.
+    """
     return omio.ZarrLocation(path).root_attrs
 
 
 def is_ome_labels(ome_meta: dict) -> bool:
+    """Determine whether OME metadata corresponds to a label image.
+
+    Simply checks for the 'image-label' tag in the root of the OME
+    metadata. [1]_
+
+    References
+    ----------
+    [1]: https://ngff.openmicroscopy.org/0.4/index.html#label-md
+    """
     return 'image-label' in ome_meta
 
 
 def ome_to_napari(ome_meta: dict) -> tuple[dict, str]:
-    """Convert an OME metadata dict to napari metadata dict and layer type."""
+    """Convert an OME metadata dict to napari metadata dict and layer type.
+
+    The bulk of the work is done by the `_ome_to_napari_meta_image` and
+    `_ome_to_napari_meta_labels` functions.
+
+    This returns the napari metadata dict and layer type string as expected
+    as elements 1 and 2 of a napari LayerDataTuple.
+    """
     layer_type = 'labels' if is_ome_labels(ome_meta) else 'image'
     if layer_type == 'image':
         meta = _ome_to_napari_meta_image(ome_meta)
@@ -67,6 +96,7 @@ def ome_to_napari(ome_meta: dict) -> tuple[dict, str]:
 
 
 def _get_scale(ome_meta):
+    """Grab the scale(s) from the first dataset in input OME metadata."""
     axes = ome_meta['multiscales'][0]['axes']
     non_channel_axes = [i for i, ax in enumerate(axes)
                         if ax['type'] != 'channel']
@@ -87,6 +117,7 @@ def _get_scale(ome_meta):
 
 
 def _get_translate(ome_meta):
+    """Grab the translation(s) from the first dataset in input OME metadata."""
     axes = ome_meta['multiscales'][0]['axes']
     non_channel_axes = [i for i, ax in enumerate(axes)
                         if ax['type'] != 'channel']
@@ -107,6 +138,7 @@ def _get_translate(ome_meta):
 
 
 def _get_contrast(ome_meta):
+    """Grab contrast limits from first dataset in input OME metadata."""
     contrast_limits = None
     contrast_range = None
     if 'omero' in ome_meta:
@@ -129,6 +161,7 @@ def _get_contrast(ome_meta):
 
 
 def _validate_colormap(cmap_str):
+    """Ensure hex colormaps are prefixed by "#"."""
     if (all(char in string.hexdigits for char in cmap_str)
             and not cmap_str.startswith('#')):
         result = '#' + cmap_str
@@ -138,6 +171,7 @@ def _validate_colormap(cmap_str):
 
 
 def _get_channel_info(ome_meta):
+    """Grab names, colormaps, and visibility for all channels in OME meta."""
     names = []
     colormaps = []
     visibles = []
@@ -179,6 +213,7 @@ def _unwrap(arglist, channel_axis):
 
 
 def _ome_to_napari_meta_image(ome_meta: dict) -> dict:
+    """Convert OME metadata for an image to napari keyword arguments."""
     metadata = {'axes': ome_meta['multiscales'][0]['axes']}
     try:
         channel_axis = [i for i, ax in enumerate(metadata['axes'])
@@ -204,6 +239,7 @@ def _ome_to_napari_meta_image(ome_meta: dict) -> dict:
 
 
 def _ome_to_napari_meta_labels(ome_meta: dict) -> dict:
+    """Convert OME metadata for a labels image to napari keyword arguments."""
     metadata = {'axes': ome_meta['multiscales'][0]['axes']}
     scale = _get_scale(ome_meta)
     translate = _get_translate(ome_meta)
