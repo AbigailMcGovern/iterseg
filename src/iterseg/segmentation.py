@@ -862,7 +862,8 @@ def segmentation_loop(
     ndim = data.ndim
     if ndim == 3:
         output = segment_single_volume(
-                data, chunk_size, config, margin, processing_function
+                np.asarray(data), chunk_size, config, margin,
+                processing_function
                 )
         output_labels[...] = output
         yield 0
