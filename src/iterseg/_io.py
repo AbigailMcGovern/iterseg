@@ -142,7 +142,7 @@ def _default_chunks(arr, chunk_dims=2):
 def save_labels_to_ome(
         path, data=None, layer_meta=None,
         shape=None, chunks=None, dtype=np.uint32,
-        ) -> str:
+        ) -> zarr.Array | 'tensorstore.Array':
     path = pathlib.Path(path)
     if data is None and (shape is None or chunks is None):
         raise ValueError('either data or shape/chunks must be provided')
