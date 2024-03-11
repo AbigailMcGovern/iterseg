@@ -148,6 +148,7 @@ def save_labels_to_ome(
         raise ValueError('either data or shape/chunks must be provided')
     store = omio.parse_url(path.as_posix())
     root = zarr.group(store=store)
+    root.attrs['image-label'] = {}
     metadata = napari_to_ome(layer_meta)
     print(metadata)
     write_multiscales_metadata(root, **metadata)
