@@ -871,8 +871,8 @@ def segmentation_loop(
     # For 4D, iterate over each time point
     for t in range(data.shape[0]):
         # warm restart:
-        # if np.any(output_labels[t]):
-        #     continue
+        if np.any(output_labels[t]):
+            continue
         input_volume = np.asarray(data[t]).astype(np.float32)
         current_output = segment_single_volume(input_volume, chunk_size,
                                                config, margin,
