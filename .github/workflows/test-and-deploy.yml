@@ -46,14 +46,13 @@ jobs:
           git clone --depth 1 https://github.com/pyvista/gl-ci-helpers.git
           powershell gl-ci-helpers/appveyor/install_opengl.ps1
 
-      # note: if you need dependencies from conda, considering using
-      # setup-miniconda: https://github.com/conda-incubator/setup-miniconda
-      # and
-      # tox-conda: https://github.com/tox-dev/tox-conda
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install setuptools tox tox-gh-actions
+          # torch on Linux installs on GPU by default which brings in
+          # massive CUDA binaries and kill the job on CI
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install .[testing]
 
       # this runs the platform-specific tests declared in tox.ini
