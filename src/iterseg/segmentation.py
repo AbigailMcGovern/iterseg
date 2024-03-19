@@ -760,9 +760,10 @@ def segmentation_wrapper(
     # Prepare data
     # ------------
     shape_4D = np.broadcast_shapes((1,) * 4, input_volume_layer.data.shape)
+    ndim = len(shape_4D)
     data = np.reshape(input_volume_layer.data, shape_4D)
-    scale = viewer.layers[0].scale[-3:] # lazy assumption that all layers have the same scale 
-    translate = viewer.layers[0].translate[-3:] # and same translate 
+    scale = viewer.layers[0].scale[-ndim:]  # lazy assumption that all layers have the same scale
+    translate = viewer.layers[0].translate[-ndim:]  # and same translate
     ndim = len(chunk_size)
 
     # Output labels
