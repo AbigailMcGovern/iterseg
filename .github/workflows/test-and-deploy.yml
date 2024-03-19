@@ -1,19 +1,23 @@
-# This workflows will upload a Python Package using Twine when a release is created
-# For more information see: https://help.github.com/en/actions/language-and-framework-guides/using-python-with-github-actions#publishing-to-package-registries
+name: Test and Deploy
 
-name: tests
+# This workflow:
+# - runs tests on pull requests
+# - runs tests on pushing to main
+# - if it's a tag push and the tag starts with v, and if the tests pass,
+#   deploys to PyPI using Trusted Publishers:
+#   https://docs.pypi.org/trusted-publishers/
 
-on: 
+# on: controls when the workflow will run
+on:
+  # Triggers the workflow on push or pull request events but only for the main
+  # branch or for tags starting with v
   push:
-    branches:
-      - master
-      - main
-    tags:
-      - "v*" # Push events to matching v*, i.e. v1.0, v20.15.10
+    branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
-    branches:
-      - master
-      - main
+    branches: [ main ]
+
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
@@ -31,7 +35,6 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-
       # these libraries enable testing on Qt on linux
       - uses: tlambert03/setup-qt-libs@v1
 
