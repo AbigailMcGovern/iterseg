@@ -10,5 +10,5 @@ __all__ = [
     'compare_segmentations'
 ]
 
-__version__ = "0.2.0rc0"
+__version__ = "0.2.0"
 
