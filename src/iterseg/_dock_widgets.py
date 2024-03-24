@@ -278,9 +278,9 @@ def load_data(
     translate: tuple of float
         Translation of the image origin in z, y, x format.
     split_channels:
-        If you have a multichannel image in the format CTZYX (or any format really as
-        long as the first dim is the channel) you can split these. This is useful if 
-        you are loading 5D data to segment. 
+        If you have a multichannel image, you can split the channels into
+        different layers. **This function assumes that the shortest axis
+        contains the channels.**
     in_memory:
         Do you want all of the data to be loaded into your computer's memory (i.e., 
         in RAM). Select false if your data is bigger than RAM or very large.
@@ -335,11 +335,11 @@ def _load_data(
     translate: tuple of float
         Translation of the image origin in z, y, x format.
     split_channels:
-        If you have a multichannel image in the format CTZYX (or any format really as
-        long as the first dim is the channel) you can split these. This is useful if 
-        you are loading 5D data to segment. 
+        If you have a multichannel image, you can split the channels into
+        different layers. **This function assumes that the shortest axis
+        contains the channels.**
     in_memory:
-        Do you want all of the data to be loaded into your computer's memory (i.e., 
+        Do you want all the data to be loaded into your computer's memory (i.e.,
         in RAM). Select false if your data is bigger than RAM or very large.
     save_stack:
         If you loaded a stack of images, do you want to save these as a single stack 
@@ -365,8 +365,13 @@ def _load_data(
             if not split_channels:
                 napari_viewer.add_image(imgs, scale=scale, name=layer_name, translate=translate)
             else:
-                for i in range(imgs.shape[0]):
-                    napari_viewer.add_image(imgs[i, ...], scale=scale, name=layer_name, translate=translate)
+                channel_axis = np.argmin(imgs.shape)
+                names = [f'{layer_name}-ch{channel}'
+                         for channel in range(imgs.shape[channel_axis])]
+                napari_viewer.add_image(imgs,
+                                        scale=scale, translate=translate,
+                                        channel_axis=channel_axis,
+                                        name=names)
         if layer_type == 'Labels':
             napari_viewer.add_labels(imgs, scale=scale, name=layer_name, translate=translate)
     if layer_type == 'Shapes':
