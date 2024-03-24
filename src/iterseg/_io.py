@@ -14,6 +14,7 @@ except ModuleNotFoundError:
 import zarr
 
 from ome_zarr import io as omio
+from ome_zarr.writer import write_multiscales_metadata
 import dask.array as da
 
 
@@ -93,6 +94,76 @@ def ome_to_napari(ome_meta: dict) -> tuple[dict, str]:
     else:
         meta = _ome_to_napari_meta_labels(ome_meta)
     return meta, layer_type
+
+
+def napari_to_ome(layer_meta: dict) -> dict:
+    """Convert napari layer data dict to single-scale OME Zarr metadata.
+
+    Notes:
+
+    - multiple scales are not yet implemented.
+    - since napari does not yet provide axis metadata, the axes are assumed to
+      be either tzyx, zyx, or yx. (tyx data is not yet supported.) The space
+      units are assumed to be in micrometers, and the time units in seconds.
+
+    Parameters
+    ----------
+    layer_meta : dict
+        The layer metadata as would appear in a napari LayerDataTuple.
+
+    Returns
+    -------
+    ome_meta : dict
+        The OME metadata required by ome_zarr.io.write_multiscales_metadata.
+        It includes the 'datasets', 'axes', and 'name' keys.
+    """
+    scale = list(map(float, layer_meta['scale']))
+    translate = list(map(float, layer_meta['translate']))
+    ndim = len(scale)
+    axes = [{'name': 't', 'type': 'time', 'unit': 'second'},
+            {'name': 'z', 'type': 'space', 'unit': 'micrometer'},
+            {'name': 'y', 'type': 'space', 'unit': 'micrometer'},
+            {'name': 'x', 'type': 'space', 'unit': 'micrometer'},
+            ][-ndim:]
+    coordtfs = [
+            {'type': 'scale', 'scale': scale},
+            {'type': 'translate', 'translate': translate}
+            ]
+    datasets = [{'coordinateTransformations': coordtfs, 'path': '0'}]
+    name = layer_meta['name']
+    ome_meta = {'datasets': datasets, 'axes': axes, 'name': name}
+    return ome_meta
+
+
+def _default_chunks(arr, chunk_dims=2):
+    return (1,) * (arr.ndim - chunk_dims) + arr.shape[-chunk_dims:]
+
+
+def save_labels_to_ome(
+        path, data=None, layer_meta=None,
+        shape=None, chunks=None, dtype=np.uint32,
+        ):
+    path = pathlib.Path(path)
+    if data is None and (shape is None or chunks is None):
+        raise ValueError('either data or shape/chunks must be provided')
+    store = omio.parse_url(path.as_posix())
+    root = zarr.group(store=store)
+    root.attrs['image-label'] = {}
+    metadata = napari_to_ome(layer_meta)
+    print(metadata)
+    write_multiscales_metadata(root, **metadata)
+    data_path = (path / '0').as_posix()
+    if data is not None:
+        shape = data.shape
+        dtype = data.dtype
+        if chunks is None and hasattr(data, 'chunks'):
+            chunks = data.chunks
+        elif chunks is None:
+            chunks = _default_chunks(data)
+    arr = open_zarr(data_path, shape=shape, chunks=chunks, dtype=dtype)
+    if data is not None:
+        arr[:] = data
+    return arr
 
 
 def _get_scale(ome_meta):
@@ -251,7 +322,11 @@ def _ome_to_napari_meta_labels(ome_meta: dict) -> dict:
     return napari_meta_dict
 
 
-def open_zarr(labels_file: pathlib.Path, *, shape=None, chunks=None):
+def open_zarr(
+        labels_file: pathlib.Path,
+        *,
+        shape=None, chunks=None, dtype=np.uint32,
+        ):
     """Open a zarr file, with tensorstore if available, with zarr otherwise.
 
     If the file doesn't exist, it is created.
@@ -264,6 +339,8 @@ def open_zarr(labels_file: pathlib.Path, *, shape=None, chunks=None):
         The shape of the array.
     chunks : tuple of int
         The chunk size of the array.
+    dtype : numpy.dtype
+        The dtype of the created array.
 
     Returns
     -------
@@ -275,7 +352,7 @@ def open_zarr(labels_file: pathlib.Path, *, shape=None, chunks=None):
                 str(labels_file),
                 mode='w',
                 shape=shape,
-                dtype=np.uint32,
+                dtype=dtype,
                 chunks=chunks,
                 )
     # read some of the metadata for tensorstore driver from file

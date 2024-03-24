@@ -7,12 +7,14 @@ import napari
 import json
 from iterseg.predict import process_chunks, predict_chunk_feature_map, load_unet
 from iterseg import watershed as ws
+from iterseg._io import save_labels_to_ome
 import zarr
 import os
 from napari.qt import thread_worker
 from scipy import ndimage as ndi
 import pathlib
 import os
+import tempfile
 
 
 # ------------------------
@@ -753,27 +755,36 @@ def segmentation_wrapper(
 
     # get the config dict
     # -------------------
-    config = config_prep_function(input_volume_layer, network_or_config_file, layer_reference)
+    config = config_prep_function(
+            input_volume_layer, network_or_config_file, layer_reference
+            )
     if config is None:
         config = {}
 
     # Prepare data
     # ------------
-    shape_4D = np.broadcast_shapes((1,) * 4, input_volume_layer.data.shape)
-    ndim = len(shape_4D)
-    data = np.reshape(input_volume_layer.data, shape_4D)
-    scale = viewer.layers[0].scale[-ndim:]  # lazy assumption that all layers have the same scale
-    translate = viewer.layers[0].translate[-ndim:]  # and same translate
-    ndim = len(chunk_size)
+    save_path = None
+    if save_dir is not None and not debug:
+        save_path = os.path.join(str(save_dir), name + '.ome.zarr')
 
-    # Output labels
-    # --------------
-    # get the output labels and layer for output segmentation
-    output_labels = zarr.zeros(
-        shape=shape_4D, 
-        chunks=(1,) + data.shape[-3:], 
-        dtype=np.int32, 
-        )
+    data = input_volume_layer.data
+    shape = data.shape
+    scale = input_volume_layer.scale
+    translate = input_volume_layer.translate
+    layer_meta = {'scale': scale, 'translate': translate, 'name': name}
+    if save_path is not None:
+        output_labels = save_labels_to_ome(
+                save_path,
+                layer_meta=layer_meta,
+                shape=shape,
+                chunks=chunk_size,
+                dtype=np.int32,
+                )
+    else:
+        output_labels = zarr.zeros(
+                shape=shape, chunks=chunk_size, dtype=np.int32
+                )
+
     output_layer = viewer.add_labels(
             output_labels,
             name=name,
@@ -781,16 +792,9 @@ def segmentation_wrapper(
             translate=translate,
             )
 
-    max_t = data.shape[0] - 1
-
-    # for yeilds
-    # ----------
     def handle_yields(yielded_val):
         viewer.dims.current_step = (yielded_val, 0, 0, 0)
         print(f"Segmented t = {yielded_val}")
-        if yielded_val == max_t and save_dir is not None:
-            save_path = os.path.join(str(save_dir), name + '.zarr')
-            zarr.save(save_path, output_labels)
 
 
     # for errors
@@ -804,8 +808,6 @@ def segmentation_wrapper(
     launch_worker = thread_worker(
         segmentation_loop,
         progress={'total': data.shape[0], 'desc': 'thread-progress'},
-        # this does not preclude us from connecting other functions to any of the
-        # worker signals (including `yielded`)
         connect={'yielded': handle_yields, 'errored': handle_errors},
     )
 
@@ -817,20 +819,13 @@ def segmentation_wrapper(
             data, 
             chunk_size, 
             margin, 
-            ndim, 
-            output_labels, 
+            output_labels,
             processing_function,
             config
         )
     else:
-        for t in segmentation_loop(viewer, data, chunk_size, margin, ndim, output_labels, processing_function, config):
+        for t in segmentation_loop(viewer, data, chunk_size, margin, output_labels, processing_function, config):
             print(f'Segmented frame {t}')
-
-    # Save the data
-    # -------------
-    if save_dir is not None and not debug:
-        save_path = os.path.join(str(save_dir), name + '.zarr')
-        zarr.save(save_path, output_labels)
 
     return output_layer
 
@@ -840,14 +835,13 @@ def segmentation_loop(
         data, 
         chunk_size, 
         margin, 
-        ndim, 
-        output_labels, 
+        output_labels,
         processing_function,
         config
     ):
-    '''
-    This function runs the segmentation function on one 3D frame at a time. 
-    The function yeilds the current time point when done and this is printed
+    """Run the segmentation function on one 3D frame at a time.
+
+    The function yields the current time point when done and this is printed
     in the main thread. 
 
     Parameters
@@ -863,28 +857,47 @@ def segmentation_loop(
         Function for producing the full segmentation
     config: dict
         Key word arguments for processing function
-    '''
+    """
+    # For 3D, segment the single volume, yield 0, and return:
+    ndim = data.ndim
+    if ndim == 3:
+        output = segment_single_volume(
+                np.asarray(data).astype(np.float32),
+                chunk_size, config, margin,
+                processing_function
+                )
+        output_labels[...] = output
+        yield 0
+        return
+    # For 4D, iterate over each time point
     for t in range(data.shape[0]):
-        #print(t) 
-        slicing = (t, slice(None), slice(None), slice(None))
-        input_volume = np.asarray(data[slicing]).astype(np.float32)
-        if input_volume.min() == 0:
-            input_volume = remove_sum_zero_slices(input_volume)
-            #random_vol = np.random.normal(input_volume.mean(), size=input_volume.shape)
-            #input_volume = np.where(input_volume == 0, random_vol, input_volume).astype(np.float32)
-        input_volume /= np.max(input_volume)
-        current_output = np.pad(
-            np.zeros(data.shape[1:], dtype=np.uint32), # not sure if this will work
-            1,
-            mode='constant',
-            constant_values=0,
-            )
-        crop = tuple([slice(1, -1),] * ndim)  # yapf: disable
-        # predict using unet
-        processing_function(input_volume, current_output, chunk_size, margin, **config)
-        #current_output[crop] = np.where(input_volume == 0, 0, current_output[crop])
-        output_labels[t, ...] = current_output[crop]
+        # warm restart:
+        if np.any(output_labels[t]):
+            continue
+        input_volume = np.asarray(data[t]).astype(np.float32)
+        current_output = segment_single_volume(input_volume, chunk_size,
+                                               config, margin,
+                                               processing_function)
+        output_labels[t, ...] = current_output
         yield t
+
+
+def segment_single_volume(input_volume, chunk_size, config, margin,
+                          processing_function):
+    if input_volume.min() == 0:
+        input_volume = remove_sum_zero_slices(input_volume)
+    input_volume /= np.max(input_volume)
+    current_output = np.pad(
+        np.zeros(input_volume.shape, dtype=np.uint32),  # not sure if this will work
+        1,
+        mode='constant',
+        constant_values=0,
+    )
+    crop = (slice(1, -1),) * current_output.ndim  # yapf: disable
+    # predict using unet
+    processing_function(input_volume, current_output, chunk_size, margin,
+                        **config)
+    return current_output[crop]
 
 
 def remove_sum_zero_slices(input_volume):
